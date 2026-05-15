@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+!.env.docker.example
+!.env.production.example
+.venv/
+.docker-tmp/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+frontend/
+node_modules/
+*.log
+.git/
+.gitignore

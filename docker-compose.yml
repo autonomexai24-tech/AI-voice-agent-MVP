@@ -1,0 +1,75 @@
+name: ai-voice-receptionist
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_voice_agent_mvp}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PERSISTENCE_ENABLED: ${PERSISTENCE_ENABLED:-true}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_voice_agent_mvp}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-5}
+      DATABASE_STARTUP_RETRY_ATTEMPTS: ${DATABASE_STARTUP_RETRY_ATTEMPTS:-30}
+      DATABASE_STARTUP_RETRY_BACKOFF_SECONDS: ${DATABASE_STARTUP_RETRY_BACKOFF_SECONDS:-2}
+      INITIALIZE_DATABASE_ON_STARTUP: ${INITIALIZE_DATABASE_ON_STARTUP:-true}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_ROOM_NAME: ${LIVEKIT_ROOM_NAME:-}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      BUSINESS_NAME: ${BUSINESS_NAME:-our clinic}
+      BUSINESS_TYPE: ${BUSINESS_TYPE:-clinic}
+      BUSINESS_SERVICES: ${BUSINESS_SERVICES:-dental cleaning,braces treatment,general consultation}
+      RECEPTIONIST_TONE: ${RECEPTIONIST_TONE:-warm, concise, respectful, and phone-friendly}
+      CALCOM_API_KEY: ${CALCOM_API_KEY:-}
+      CALCOM_EVENT_TYPE_ID: ${CALCOM_EVENT_TYPE_ID:-}
+      FAST2SMS_API_KEY: ${FAST2SMS_API_KEY:-}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      API_BASE_URL: ${FRONTEND_INTERNAL_API_BASE_URL:-http://backend:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      FRONTEND_API_TIMEOUT_MS: ${FRONTEND_API_TIMEOUT_MS:-8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  postgres_data:

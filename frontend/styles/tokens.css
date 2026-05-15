@@ -1,0 +1,20 @@
+:root {
+  --surface: #f3efe7;
+  --panel: #fbfaf7;
+  --panel-strong: #ffffff;
+  --ink: #141414;
+  --ink-muted: #625f58;
+  --line: #dfd8ce;
+  --line-strong: #cfc6b8;
+  --moss: #4e6d58;
+  --moss-soft: #e6eee7;
+  --clay: #a85d3b;
+  --clay-soft: #f4e5de;
+  --steel: #42677a;
+  --steel-soft: #e2ecf0;
+  --warning: #9a721c;
+  --warning-soft: #f6edcf;
+  --danger: #9b3d36;
+  --danger-soft: #f3ddda;
+  --font-body: "Aptos", "Segoe UI", "Noto Sans", "Nirmala UI", sans-serif;
+}

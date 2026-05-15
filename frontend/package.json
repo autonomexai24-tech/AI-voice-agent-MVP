@@ -1,0 +1,29 @@
+{
+  "name": "ai-voice-agent-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build && node scripts/log-build-completed.mjs",
+    "lint": "eslint .",
+    "test": "node tests/frontend-foundation.test.mjs",
+    "test:local": "node tests/local-integration-smoke.mjs"
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.0.0",
+    "postcss": "^8.4.45",
+    "tailwindcss": "^3.4.13",
+    "typescript": "^5.6.0"
+  }
+}
