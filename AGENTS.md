@@ -872,3 +872,15 @@ The true moat is:
 * workflow reliability
 * configurable conversational behavior
 * rapid conversational iteration
+The application must remain deployment-independent.
+
+The backend should initialize safely regardless of:
+- Dockerfile
+- deployment platform
+- startup scripts
+- container runtime
+
+Critical initialization logic MUST remain inside
+application startup lifecycle.
+
+Avoid hidden external initialization dependencies.

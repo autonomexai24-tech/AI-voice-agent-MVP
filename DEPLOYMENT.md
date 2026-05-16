@@ -20,11 +20,12 @@ Expected local URLs:
 ```txt
 Frontend: http://localhost:3000
 Backend:  http://localhost:8000
-Health:   http://localhost:8000/healthz
+Health:   http://localhost:8000/readyz
 Ready:    http://localhost:8000/readyz
 ```
 
-The backend initializes the PostgreSQL schema on startup when
+The backend initializes the PostgreSQL schema inside the FastAPI startup
+lifecycle when
 `INITIALIZE_DATABASE_ON_STARTUP=true`.
 
 ## EasyPanel Services
@@ -36,7 +37,7 @@ Backend:
 ```txt
 Dockerfile: Dockerfile.backend
 Port:       8000
-Health:     /healthz
+Health:     /readyz
 Command:    default image command
 ```
 

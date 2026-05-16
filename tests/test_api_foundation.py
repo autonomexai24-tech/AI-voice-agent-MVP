@@ -14,6 +14,7 @@ from api.dependencies.database import (
 from api.main import create_app
 from database.repositories.bookings import BookingList
 from database.repositories.calls import CallList
+from database.session import DatabaseSettings
 
 
 def test_call_api_lists_and_fetches_calls() -> None:
@@ -110,6 +111,104 @@ def test_health_and_readiness_endpoints_are_container_friendly() -> None:
     assert readiness_response.status_code == 200
     assert readiness_response.json()["status"] == "ready"
     assert readiness_response.json()["database_configured"] is False
+
+
+def test_configured_app_initializes_database_schema_on_startup(monkeypatch) -> None:
+    monkeypatch.delenv("INITIALIZE_DATABASE_ON_STARTUP", raising=False)
+    events: list[str] = []
+    engine = _FakeEngine(events)
+    session_factory = object()
+
+    def fake_create_engine(settings):
+        assert settings.is_configured is True
+        events.append("engine_created")
+        return engine
+
+    def fake_create_session_factory(received_engine):
+        assert received_engine is engine
+        events.append("session_factory_created")
+        return session_factory
+
+    async def fake_initialize_schema(received_engine):
+        assert received_engine is engine
+        events.append("schema_initialized")
+
+    monkeypatch.setattr("api.main.create_engine", fake_create_engine)
+    monkeypatch.setattr("api.main.create_session_factory", fake_create_session_factory)
+    monkeypatch.setattr("api.main.initialize_schema", fake_initialize_schema)
+
+    app = create_app(
+        database_settings=DatabaseSettings(
+            url="postgresql+asyncpg://postgres:postgres@localhost/app",
+            enabled=True,
+        ),
+    )
+
+    with TestClient(app) as client:
+        readiness_response = client.get("/readyz")
+
+    assert readiness_response.status_code == 200
+    assert readiness_response.json()["database_configured"] is True
+    assert events == [
+        "engine_created",
+        "schema_initialized",
+        "session_factory_created",
+        "engine_disposed",
+    ]
+
+
+def test_configured_app_retries_schema_initialization_on_startup(monkeypatch) -> None:
+    monkeypatch.delenv("INITIALIZE_DATABASE_ON_STARTUP", raising=False)
+    events: list[str] = []
+    engine = _FakeEngine(events)
+    attempts = 0
+
+    def fake_create_engine(settings):
+        events.append("engine_created")
+        return engine
+
+    def fake_create_session_factory(received_engine):
+        assert received_engine is engine
+        events.append("session_factory_created")
+        return object()
+
+    async def fake_initialize_schema(received_engine):
+        nonlocal attempts
+        assert received_engine is engine
+        attempts += 1
+        events.append(f"schema_attempt_{attempts}")
+        if attempts == 1:
+            raise RuntimeError("postgres is not ready yet")
+
+    async def fake_sleep(seconds):
+        events.append(f"sleep_{seconds}")
+
+    monkeypatch.setattr("api.main.create_engine", fake_create_engine)
+    monkeypatch.setattr("api.main.create_session_factory", fake_create_session_factory)
+    monkeypatch.setattr("api.main.initialize_schema", fake_initialize_schema)
+    monkeypatch.setattr("api.main.asyncio.sleep", fake_sleep)
+
+    app = create_app(
+        database_settings=DatabaseSettings(
+            url="postgresql+asyncpg://postgres:postgres@localhost/app",
+            enabled=True,
+            startup_retry_attempts=2,
+            startup_retry_backoff_seconds=0,
+        ),
+    )
+
+    with TestClient(app) as client:
+        readiness_response = client.get("/readyz")
+
+    assert readiness_response.status_code == 200
+    assert events == [
+        "engine_created",
+        "schema_attempt_1",
+        "sleep_0",
+        "schema_attempt_2",
+        "session_factory_created",
+        "engine_disposed",
+    ]
 
 
 @dataclass
@@ -209,3 +308,11 @@ class _SettingsRepository:
         if payload.default_language is not None:
             self.settings.default_language = payload.default_language
         return self.settings
+
+
+class _FakeEngine:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def dispose(self) -> None:
+        self._events.append("engine_disposed")

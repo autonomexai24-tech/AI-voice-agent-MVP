@@ -43,6 +43,8 @@ def test_database_settings_parse_environment() -> None:
             "DATABASE_RETRY_ATTEMPTS": "4",
             "DATABASE_RETRY_BACKOFF_SECONDS": "0.2",
             "DATABASE_QUEUE_MAX_ITEMS": "25",
+            "DATABASE_STARTUP_RETRY_ATTEMPTS": "9",
+            "DATABASE_STARTUP_RETRY_BACKOFF_SECONDS": "1.5",
         }
     )
 
@@ -53,6 +55,8 @@ def test_database_settings_parse_environment() -> None:
     assert settings.retry_attempts == 4
     assert settings.retry_backoff_seconds == 0.2
     assert settings.queue_max_items == 25
+    assert settings.startup_retry_attempts == 9
+    assert settings.startup_retry_backoff_seconds == 1.5
 
 
 def test_load_config_requires_url_when_persistence_is_explicitly_enabled(

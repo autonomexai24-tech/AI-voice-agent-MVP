@@ -31,6 +31,8 @@ class DatabaseSettings:
     retry_backoff_seconds: float = 0.05
     queue_max_items: int = 500
     drain_timeout_seconds: float = 2.0
+    startup_retry_attempts: int = 30
+    startup_retry_backoff_seconds: float = 2.0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "DatabaseSettings":
@@ -47,6 +49,14 @@ class DatabaseSettings:
             retry_backoff_seconds=_float(source, "DATABASE_RETRY_BACKOFF_SECONDS", 0.05),
             queue_max_items=_int(source, "DATABASE_QUEUE_MAX_ITEMS", 500),
             drain_timeout_seconds=_float(source, "DATABASE_DRAIN_TIMEOUT_SECONDS", 2.0),
+            startup_retry_attempts=max(
+                _int(source, "DATABASE_STARTUP_RETRY_ATTEMPTS", 30),
+                1,
+            ),
+            startup_retry_backoff_seconds=max(
+                _float(source, "DATABASE_STARTUP_RETRY_BACKOFF_SECONDS", 2.0),
+                0.0,
+            ),
         )
 
     @classmethod

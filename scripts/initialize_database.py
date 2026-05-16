@@ -26,16 +26,13 @@ async def main() -> None:
         )
         return
 
-    retry_attempts = _int_env("DATABASE_STARTUP_RETRY_ATTEMPTS", 30)
-    retry_backoff_seconds = _float_env("DATABASE_STARTUP_RETRY_BACKOFF_SECONDS", 2.0)
-
-    for attempt in range(1, retry_attempts + 1):
+    for attempt in range(1, settings.startup_retry_attempts + 1):
         try:
             await _initialize_once(settings)
             log_event(logger, "database_schema_ready", attempt=attempt)
             return
         except Exception as exc:
-            if attempt >= retry_attempts:
+            if attempt >= settings.startup_retry_attempts:
                 log_error(
                     logger,
                     "database_schema_initialization_failed",
@@ -48,9 +45,9 @@ async def main() -> None:
                 "database_schema_initialization_retrying",
                 attempt=attempt,
                 error_type=type(exc).__name__,
-                retry_in_seconds=retry_backoff_seconds,
+                retry_in_seconds=settings.startup_retry_backoff_seconds,
             )
-            await asyncio.sleep(retry_backoff_seconds)
+            await asyncio.sleep(settings.startup_retry_backoff_seconds)
 
 
 async def _initialize_once(settings: DatabaseSettings) -> None:
@@ -59,28 +56,6 @@ async def _initialize_once(settings: DatabaseSettings) -> None:
         await initialize_schema(engine)
     finally:
         await engine.dispose()
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(value, 1)
-
-
-def _float_env(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return max(value, 0.0)
 
 
 if __name__ == "__main__":

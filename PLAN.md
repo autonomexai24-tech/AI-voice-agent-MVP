@@ -878,3 +878,17 @@ The true moat is:
 * rapid iteration capability
 * configurable conversational intelligence
 * reliable workflow execution
+The backend must remain self-initializing.
+
+Database schema creation and startup validation
+must occur INSIDE application startup lifecycle,
+not through external deployment scripts only.
+
+The application must:
+- verify DB connectivity
+- initialize schema safely
+- validate required tables
+- fail loudly if persistence unavailable
+- expose startup health state
+
+The runtime should never become partially alive.
