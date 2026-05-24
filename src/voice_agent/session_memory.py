@@ -52,6 +52,18 @@ class BookingMemory:
     field_sources: dict[str, str] = field(default_factory=dict)
     retry_counts: dict[str, int] = field(default_factory=dict)
     active_correction: str | None = None
+    booking_fingerprint: str | None = None
+    calcom_uid: str | None = None
+    external_status: str | None = None
+    confirmed_at: Any | None = None
+    booking_validation_state: str | None = None
+    booking_runtime_result: Any | None = None
+    notification_id: str | None = None
+    notification_status: str | None = None
+    notification_attempts: int = 0
+    notification_error: str | None = None
+    fulfillment_status: str | None = None
+    fulfillment_language: str | None = None
 
     @property
     def pending_booking_fields(self) -> tuple[str, ...]:
@@ -147,11 +159,15 @@ class CallSessionMemory:
     def pending_booking_fields(self) -> tuple[str, ...]:
         return self.booking.pending_booking_fields
 
-    def update_language(self, language: str, *, request_id: str | None = None) -> None:
-        if language == self.language:
+    def update_language(self, language: Any, *, request_id: str | None = None) -> None:
+        active_language = getattr(language, "active_language", None)
+        if active_language is None:
+            active_language = str(language)
+        if active_language == self.language and self.booking.language == active_language:
             return
         previous_language = self.language
-        self.language = language
+        self.language = active_language
+        self.booking.language = active_language
         self.runtime_memory.update_language(language, request_id=request_id)
         self._log_update(
             request_id=request_id,
@@ -332,6 +348,37 @@ class CallSessionMemory:
         self.runtime_memory.resolve_question(field_name="confirmation")
         self.runtime_memory.update_from_session(self)
 
+    def note_notification_state(
+        self,
+        *,
+        notification_state: Any | None,
+        fulfillment_status: str,
+        request_id: str | None = None,
+    ) -> None:
+        self.booking.fulfillment_status = fulfillment_status
+        if notification_state is not None:
+            self.booking.notification_id = getattr(notification_state, "notification_id", None)
+            self.booking.notification_status = getattr(notification_state, "status", None)
+            self.booking.notification_attempts = int(
+                getattr(notification_state, "attempts", 0) or 0
+            )
+            self.booking.notification_error = getattr(notification_state, "error_detail", None)
+            self.booking.fulfillment_language = getattr(
+                notification_state,
+                "fulfillment_language",
+                None,
+            )
+        self.runtime_memory.update_from_session(self, request_id=request_id)
+        self._log_update(
+            request_id=request_id,
+            updated_fields=("notification_state",),
+            notification_id=self.booking.notification_id,
+            notification_status=self.booking.notification_status,
+            notification_attempts=self.booking.notification_attempts,
+            fulfillment_status=self.booking.fulfillment_status,
+            fulfillment_language=self.booking.fulfillment_language,
+        )
+
     def clear_confirmation(self) -> None:
         self.booking.awaiting_confirmation = False
         self.booking.confirmation_completed = False
@@ -431,6 +478,16 @@ class CallSessionMemory:
             "language": self.booking.language,
             "awaiting_confirmation": self.booking.awaiting_confirmation,
             "confirmation_completed": self.booking.confirmation_completed,
+            "booking_fingerprint": self.booking.booking_fingerprint,
+            "calcom_uid": self.booking.calcom_uid,
+            "external_status": self.booking.external_status,
+            "booking_validation_state": self.booking.booking_validation_state,
+            "notification_id": self.booking.notification_id,
+            "notification_status": self.booking.notification_status,
+            "notification_attempts": self.booking.notification_attempts,
+            "notification_error": self.booking.notification_error,
+            "fulfillment_status": self.booking.fulfillment_status,
+            "fulfillment_language": self.booking.fulfillment_language,
             "booking_stage": self.booking_stage.value,
             "pending_booking_fields": self.pending_booking_fields,
             "escalation_triggered": self.escalation_triggered,

@@ -21,6 +21,11 @@ class CallCreate:
     duration_seconds: int | None = None
     booking_outcome: str | None = None
     escalation_triggered: bool = False
+    status: str | None = None
+    worker_id: str | None = None
+    abandoned_at: datetime | None = None
+    termination_reason: str | None = None
+    last_lifecycle_event: str | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,7 @@ class CallRepository:
             model = CallModel(
                 call_id=payload.call_id,
                 started_at=payload.started_at or utc_now(),
+                status=payload.status or "active",
             )
             self._session.add(model)
 
@@ -50,6 +56,11 @@ class CallRepository:
             ("ended_at", payload.ended_at),
             ("duration_seconds", payload.duration_seconds),
             ("booking_outcome", payload.booking_outcome),
+            ("status", payload.status),
+            ("worker_id", payload.worker_id),
+            ("abandoned_at", payload.abandoned_at),
+            ("termination_reason", payload.termination_reason),
+            ("last_lifecycle_event", payload.last_lifecycle_event),
         ):
             if value is not None:
                 setattr(model, field_name, value)
@@ -61,6 +72,31 @@ class CallRepository:
 
     async def get(self, call_id: str) -> CallModel | None:
         return await self._session.get(CallModel, call_id)
+
+    async def mark_abandoned_for_worker(
+        self,
+        *,
+        worker_id: str,
+        abandoned_at: datetime | None = None,
+        reason: str = "worker_heartbeat_missed",
+    ) -> list[str]:
+        abandoned_at = abandoned_at or utc_now()
+        statement = select(CallModel).where(
+            CallModel.worker_id == worker_id,
+            CallModel.ended_at.is_(None),
+            CallModel.status.in_(("active", "draining")),
+        )
+        result = await self._session.execute(statement)
+        calls = list(result.scalars().all())
+        for call in calls:
+            call.status = "abandoned"
+            call.ended_at = abandoned_at
+            call.abandoned_at = abandoned_at
+            call.booking_outcome = call.booking_outcome or "abandoned"
+            call.termination_reason = reason
+            call.last_lifecycle_event = "call_abandoned"
+        await self._session.flush()
+        return [call.call_id for call in calls]
 
     async def list(self, *, limit: int | None = None, cursor: str | None = None) -> CallList:
         page_limit = clamp_limit(limit)

@@ -14,9 +14,7 @@ from voice_agent.language import (
 )
 from voice_agent.logging_config import get_logger, log_event
 from voice_agent.optimization import RuntimeLatencyOptimizer
-from voice_agent.orchestration import ConversationOrchestrator
 from voice_agent.realtime_prompt_manager import PromptIntent, RealtimePromptManager
-from voice_agent.retrieval import FAQRetrievalEngine
 from voice_agent.runtime_persistence import RuntimePersistenceSink, safe_enqueue
 from voice_agent.session_memory import CallSessionMemory
 
@@ -44,6 +42,7 @@ class OpenAIResponseClient:
         session_memory: CallSessionMemory | None = None,
         persistence_sink: RuntimePersistenceSink | None = None,
     ) -> None:
+        _ = (calcom_config, fast2sms_config, notification_orchestrator)
         self._config = config
         self._client = AsyncOpenAI(api_key=config.api_key, timeout=config.timeout_seconds)
         self._business_config = business_config or _default_business_config()
@@ -60,18 +59,6 @@ class OpenAIResponseClient:
             retrieval_cache=self._optimizer.retrieval_cache,
             latency_profiler=self._optimizer.profiler,
         )
-        self._conversation_orchestrator = ConversationOrchestrator(
-            self._business_config,
-            session_id=self._session_memory.session_id,
-            faq_retrieval_engine=FAQRetrievalEngine(
-                top_k=1,
-                retrieval_cache=self._optimizer.retrieval_cache,
-            ),
-            persistence_sink=persistence_sink,
-        )
-        self._calcom_config = calcom_config
-        self._fast2sms_config = fast2sms_config
-        self._notification_orchestrator = notification_orchestrator
 
     async def aclose(self) -> None:
         await self._client.close()
@@ -94,7 +81,7 @@ class OpenAIResponseClient:
         language = language or default_language_snapshot()
         with self._optimizer.profiler.span("memory_assembly", request_id=request_id):
             self._session_memory.update_language(
-                language.active_language,
+                language,
                 request_id=request_id,
             )
             self._session_memory.record_turn(
@@ -111,51 +98,6 @@ class OpenAIResponseClient:
             language=language.active_language,
             request_id=request_id,
         )
-
-        async with self._optimizer.profiler.async_span("orchestration", request_id=request_id):
-            orchestration_decision = await self._conversation_orchestrator.handle_turn(
-                cleaned_transcript,
-                memory=self._session_memory,
-                language=language,
-                request_id=request_id,
-            )
-        if (
-            orchestration_decision.handled
-            and orchestration_decision.response_text is not None
-        ):
-            self._session_memory.record_turn(
-                role="assistant",
-                text=orchestration_decision.response_text,
-                request_id=request_id,
-            )
-            safe_enqueue(
-                self._persistence_sink,
-                "enqueue_transcript",
-                call_id=self._session_memory.session_id,
-                speaker="assistant",
-                text=orchestration_decision.response_text,
-                language=language.active_language,
-                request_id=request_id,
-            )
-            total_latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
-            self._optimizer.profiler.record(
-                "total_response",
-                total_latency_ms,
-                request_id=request_id,
-                prompt_size=0,
-            )
-            self._optimizer.log_response_summary(
-                request_id=request_id,
-                prompt_size=0,
-                compression_ratio=1.0,
-                memory_pruned=0,
-            )
-            return AIResponse(
-                text=orchestration_decision.response_text,
-                model=self._config.model,
-                response_id=None,
-                language=language.active_language,
-            )
 
         decision = await self._business_prompt.prepare_response(
             cleaned_transcript,
@@ -231,7 +173,10 @@ class OpenAIResponseClient:
             business=business_context,
             memory=self._session_memory,
             language=language,
-            intent=_prompt_intent_from_decisions(decision, orchestration_decision.prompt_intent),
+            intent=_prompt_intent_from_decisions(
+                decision,
+                PromptIntent(classification=decision.classification or "provider_response"),
+            ),
             request_id=request_id,
         )
 
@@ -397,34 +342,3 @@ def _default_business_config() -> BusinessConfig:
         context_path=None,
     )
 
-
-def _default_calcom_config() -> CalComConfig:
-    return CalComConfig(
-        api_key=None,
-        base_url="https://api.cal.com/v2",
-        slots_api_version="2024-09-04",
-        bookings_api_version="2026-02-25",
-        event_type_id=None,
-        event_type_slug=None,
-        username=None,
-        team_slug=None,
-        organization_slug=None,
-        time_zone="Asia/Kolkata",
-        duration_minutes=30,
-        timeout_seconds=8.0,
-        retry_attempts=1,
-        default_attendee_email=None,
-    )
-
-
-def _default_fast2sms_config() -> Fast2SMSConfig:
-    return Fast2SMSConfig(
-        api_key=None,
-        base_url="https://www.fast2sms.com/dev/bulkV2",
-        route="q",
-        language="english",
-        timeout_seconds=5.0,
-        retry_attempts=1,
-        queue_max_items=100,
-        drain_timeout_seconds=3.0,
-    )

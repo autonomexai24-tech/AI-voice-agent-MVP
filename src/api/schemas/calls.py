@@ -19,6 +19,11 @@ class CallRead(BaseModel):
     duration_seconds: int | None = None
     booking_outcome: str | None = None
     escalation_triggered: bool
+    status: str = "active"
+    worker_id: str | None = None
+    abandoned_at: datetime | None = None
+    termination_reason: str | None = None
+    last_lifecycle_event: str | None = None
 
 
 class CallListResponse(BaseModel):

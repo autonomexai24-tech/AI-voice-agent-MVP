@@ -8,6 +8,12 @@ from voice_agent.conversational_booking import ConversationalBookingFlow
 from voice_agent.language import SessionLanguageRouter, default_language_snapshot
 from voice_agent.prompts.composer import PromptContext, compose_prompt
 from voice_agent.session_memory import CallSessionMemory
+from booking_runtime_fakes import (
+    FakeBookingRuntimeStore,
+    FakeCalendar,
+    calcom_config,
+    slot_tomorrow,
+)
 
 
 def test_prompt_composition_injects_business_and_booking_memory() -> None:
@@ -56,7 +62,12 @@ def test_conversational_booking_collects_phase1a_fields_in_memory() -> None:
 
 async def _run_booking_collection() -> None:
     memory = CallSessionMemory(session_id="room-123")
-    flow = ConversationalBookingFlow(_business_config())
+    flow = ConversationalBookingFlow(
+        _business_config(),
+        calcom_config=calcom_config(),
+        calendar=FakeCalendar(slots=(slot_tomorrow(10),)),
+        persistence_sink=FakeBookingRuntimeStore(),
+    )
     language = default_language_snapshot()
 
     first = await flow.handle_turn(

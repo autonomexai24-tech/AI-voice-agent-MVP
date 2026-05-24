@@ -65,7 +65,7 @@ async def _run_generate_response_test() -> None:
     assert "conversation" not in fake_client.responses.kwargs
 
 
-def test_generate_response_handles_booking_collection_without_provider_booking() -> None:
+def test_generate_response_does_not_own_booking_runtime() -> None:
     asyncio.run(_run_generate_response_booking_test())
 
 
@@ -86,12 +86,12 @@ async def _run_generate_response_booking_test() -> None:
         language=SessionLanguageRouter(initial_language="english").snapshot(),
     )
 
-    assert response.text == "Sure. May I have your name?"
+    assert response.text == "Yes sir, we provide dental cleaning at Smile Dental Clinic."
     assert response.response_id is None
     assert fake_client.responses.kwargs is None
-    assert client._session_memory.booking.selected_service == "dental cleaning"
-    assert client._session_memory.booking.preferred_date == "tomorrow"
-    assert client._session_memory.booking.preferred_time == "10 AM"
+    assert client._session_memory.booking.selected_service is None
+    assert client._session_memory.booking.preferred_date is None
+    assert client._session_memory.booking.preferred_time is None
 
 
 def test_extract_output_text_accepts_output_text_property() -> None:

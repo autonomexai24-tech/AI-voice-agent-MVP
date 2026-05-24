@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from voice_agent.agent_phase1d import SpeechWorkItem, TranscriptWorkItem, _consume_transcripts
 from voice_agent.audio import PcmFrame
 from voice_agent.config import BusinessConfig
 from voice_agent.conversation.orchestrator import ConversationOrchestrator
@@ -14,7 +13,6 @@ from voice_agent.conversation.turn_manager import ResponseRepetitionGuard
 from voice_agent.conversational_booking import ConversationalBookingFlow
 from voice_agent.interruption import RealtimeInterruptionManager
 from voice_agent.language import SessionLanguageRouter, default_language_snapshot
-from voice_agent.providers.openai_text import AIResponse
 from voice_agent.session_memory import CallSessionMemory
 
 
@@ -187,36 +185,6 @@ def test_multilingual_interruption_recovery_preserves_style() -> None:
     asyncio.run(run())
 
 
-def test_duplicate_ai_response_is_not_played_after_orchestration() -> None:
-    asyncio.run(_run_duplicate_response_suppression_test())
-
-
-async def _run_duplicate_response_suppression_test() -> None:
-    transcript_queue: asyncio.Queue[TranscriptWorkItem | None] = asyncio.Queue()
-    speech_queue: asyncio.Queue[SpeechWorkItem | None] = asyncio.Queue()
-    manager = RealtimeInterruptionManager()
-    openai_client = _DuplicateOpenAIClient()
-
-    await transcript_queue.put(TranscriptWorkItem(text="hello", request_id="req-1"))
-    await transcript_queue.put(TranscriptWorkItem(text="hello again", request_id="req-2"))
-    await transcript_queue.put(None)
-
-    await _consume_transcripts(
-        openai_client,
-        transcript_queue,
-        speech_queue,
-        interruption_manager=manager,
-    )
-
-    first = await speech_queue.get()
-    close = await speech_queue.get()
-
-    assert isinstance(first, SpeechWorkItem)
-    assert first.text == "Sure. May I have your name?"
-    assert close is None
-    assert speech_queue.empty()
-
-
 def test_invalid_state_transition_is_observable(caplog) -> None:
     caplog.set_level(logging.INFO)
     orchestrator = ConversationOrchestrator(initial_state=ConversationState.LISTENING)
@@ -335,22 +303,6 @@ def test_recovery_repetition_guard_blocks_duplicate_recovery(caplog) -> None:
 
     events = [record.getMessage() for record in caplog.records]
     assert "duplicate_response_blocked" in events
-
-
-class _DuplicateOpenAIClient:
-    async def generate_response(
-        self,
-        transcript: str,
-        *,
-        language=None,
-        request_id=None,
-    ) -> AIResponse:
-        return AIResponse(
-            text="Sure. May I have your name?",
-            model="gpt-4o-mini",
-            response_id=request_id,
-            language=language.active_language if language is not None else "english",
-        )
 
 
 def _business_config() -> BusinessConfig:

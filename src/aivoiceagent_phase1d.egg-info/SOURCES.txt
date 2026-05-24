@@ -42,10 +42,6 @@ src/database/repositories/recordings.py
 src/database/repositories/transcripts.py
 src/voice_agent/__init__.py
 src/voice_agent/__main__.py
-src/voice_agent/agent.py
-src/voice_agent/agent_phase1b.py
-src/voice_agent/agent_phase1c.py
-src/voice_agent/agent_phase1d.py
 src/voice_agent/agent_v2.py
 src/voice_agent/audio.py
 src/voice_agent/business_prompt.py
@@ -55,7 +51,6 @@ src/voice_agent/interruption.py
 src/voice_agent/language.py
 src/voice_agent/livekit_audio.py
 src/voice_agent/livekit_auth.py
-src/voice_agent/livekit_inbound.py
 src/voice_agent/logging_config.py
 src/voice_agent/notifications.py
 src/voice_agent/runtime_persistence.py

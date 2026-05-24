@@ -27,12 +27,19 @@ from voice_agent.booking.retry_strategy import (
     prompt_for_missing_field,
     prompt_for_silence,
 )
+from voice_agent.booking.runtime import (
+    BookingNotificationSink,
+    BookingRuntimeExecutor,
+    BookingRuntimePersistence,
+    BookingRuntimeResult,
+)
 from voice_agent.booking.summaries import build_booking_summary
 from voice_agent.booking.validation import validate_booking_extraction
-from voice_agent.config import BusinessConfig
+from voice_agent.config import BusinessConfig, CalComConfig
 from voice_agent.language import SessionLanguageSnapshot, default_language_snapshot
 from voice_agent.logging_config import get_logger, log_event
-from voice_agent.runtime_persistence import RuntimePersistenceSink, safe_enqueue
+from voice_agent.providers.calcom import CalComClient
+from voice_agent.runtime_persistence import RuntimePersistenceSink
 from voice_agent.session_memory import CallSessionMemory
 
 logger = get_logger(__name__)
@@ -47,6 +54,7 @@ class BookingWorkflowResult:
     corrected_fields: tuple[str, ...] = ()
     pending_fields: tuple[str, ...] = ()
     booking_stage: str = "idle"
+    runtime_result: BookingRuntimeResult | None = None
 
 
 class BookingIntelligenceWorkflow:
@@ -56,10 +64,27 @@ class BookingIntelligenceWorkflow:
         *,
         today_provider: Callable[[], date] | None = None,
         persistence_sink: RuntimePersistenceSink | None = None,
+        calcom_config: CalComConfig | None = None,
+        calendar: object | None = None,
+        notification_sink: BookingNotificationSink | None = None,
     ) -> None:
         self._business_config = business_config
         self._today_provider = today_provider or date.today
         self._persistence_sink = persistence_sink
+        self._booking_runtime = BookingRuntimeExecutor(
+            business_config=business_config,
+            calcom_config=calcom_config,
+            calendar=calendar if calendar is not None else (CalComClient(calcom_config) if calcom_config else None),
+            persistence=(
+                persistence_sink
+                if _supports_booking_runtime_persistence(persistence_sink)
+                else None
+            ),
+            notification_sink=notification_sink,
+        )
+
+    async def aclose(self) -> None:
+        await self._booking_runtime.aclose()
 
     async def handle_turn(
         self,
@@ -72,9 +97,7 @@ class BookingIntelligenceWorkflow:
         cleaned = _clean_text(transcript)
         language = language or default_language_snapshot()
         active_language = language.active_language
-        if memory.booking.language != active_language:
-            memory.booking.language = active_language
-        memory.runtime_memory.update_language(language, request_id=request_id)
+        memory.update_language(language, request_id=request_id)
         memory.runtime_memory.update_from_session(
             memory,
             language=language,
@@ -128,7 +151,7 @@ class BookingIntelligenceWorkflow:
         )
 
         if memory.booking.awaiting_confirmation:
-            confirmation_result = self._handle_confirmation_turn(
+            confirmation_result = await self._handle_confirmation_turn(
                 cleaned,
                 memory=memory,
                 extraction_has_booking_values=_has_booking_values(extraction.values),
@@ -215,7 +238,7 @@ class BookingIntelligenceWorkflow:
             corrected=corrected,
         )
 
-    def _handle_confirmation_turn(
+    async def _handle_confirmation_turn(
         self,
         transcript: str,
         *,
@@ -229,33 +252,49 @@ class BookingIntelligenceWorkflow:
             memory.clear_confirmation()
             return None
         if is_confirmation_yes(transcript):
-            memory.mark_confirmation_completed()
+            runtime_result = await self._booking_runtime.confirm(
+                memory=memory,
+                language=language,
+                request_id=request_id,
+            )
+            if runtime_result.booking_success:
+                memory.mark_confirmation_completed()
+                memory.booking.booking_runtime_result = runtime_result
+                memory.booking.calcom_uid = runtime_result.calcom_booking_uid
+                memory.booking.external_status = runtime_result.external_status
+                memory.booking.confirmed_at = runtime_result.booking_time
+                memory.booking.booking_validation_state = runtime_result.validation_status
+                memory.booking.booking_fingerprint = runtime_result.booking_fingerprint
+            else:
+                memory.booking.booking_runtime_result = runtime_result
             log_event(
                 logger,
-                "booking_confirmation_completed",
+                (
+                    "booking_confirmation_completed"
+                    if runtime_result.booking_success
+                    else "booking_confirmation_failed"
+                ),
                 request_id=request_id,
                 session_id=memory.session_id,
                 booking_stage=memory.booking_stage.value,
                 pending_booking_fields=list(memory.pending_booking_fields),
-            )
-            safe_enqueue(
-                self._persistence_sink,
-                "enqueue_booking_confirmed",
-                memory=memory,
-                confirmation_status="confirmed",
-                request_id=request_id,
+                booking_success=runtime_result.booking_success,
+                calcom_booking_uid=runtime_result.calcom_booking_uid,
+                external_status=runtime_result.external_status,
+                validation_status=runtime_result.validation_status,
+                duplicate_detected=runtime_result.duplicate_detected,
+                retry_state=runtime_result.retry_state,
+                persistence_status=runtime_result.persistence_status,
+                booking_fingerprint=runtime_result.booking_fingerprint,
             )
             self._log_continuity(memory, request_id=request_id)
             return BookingWorkflowResult(
                 True,
-                _localized(
-                    language,
-                    "Perfect, I have the appointment details confirmed. The clinic team can confirm the slot shortly.",
-                    "Perfect, appointment details confirm ho gaye. Clinic team slot shortly confirm kar degi.",
-                ),
-                "complete",
+                runtime_result.response_text,
+                "complete" if runtime_result.booking_success else "booking_failed",
                 pending_fields=memory.pending_booking_fields,
                 booking_stage=memory.booking_stage.value,
+                runtime_result=runtime_result,
             )
         if is_confirmation_no(transcript):
             memory.clear_confirmation()
@@ -600,3 +639,14 @@ def _localized(language: str, english: str, hinglish: str) -> str:
     if language in {"hindi", "hinglish", "mixed"}:
         return hinglish
     return english
+
+
+def _supports_booking_runtime_persistence(
+    sink: RuntimePersistenceSink | None,
+) -> bool:
+    return bool(
+        sink is not None
+        and hasattr(sink, "find_booking_by_fingerprint")
+        and hasattr(sink, "reserve_booking")
+        and hasattr(sink, "persist_booking_confirmed")
+    )

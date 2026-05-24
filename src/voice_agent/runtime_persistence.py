@@ -17,6 +17,9 @@ class RuntimePersistenceSink(Protocol):
         caller_phone: str | None = None,
         language: str | None = None,
         started_at: datetime | None = None,
+        status: str | None = None,
+        worker_id: str | None = None,
+        last_lifecycle_event: str | None = None,
         request_id: str | None = None,
     ) -> bool:
         ...
@@ -29,6 +32,10 @@ class RuntimePersistenceSink(Protocol):
         duration_seconds: int | None = None,
         booking_outcome: str | None = None,
         escalation_triggered: bool = False,
+        status: str | None = None,
+        worker_id: str | None = None,
+        termination_reason: str | None = None,
+        last_lifecycle_event: str | None = None,
         request_id: str | None = None,
     ) -> bool:
         ...
@@ -65,6 +72,101 @@ class RuntimePersistenceSink(Protocol):
     ) -> bool:
         ...
 
+    def enqueue_worker_heartbeat(
+        self,
+        *,
+        worker_id: str,
+        active_session_count: int,
+        uptime_seconds: int,
+        current_calls: tuple[str, ...],
+        memory_usage_mb: float | None = None,
+        cpu_usage_percent: float | None = None,
+        status: str = "running",
+        request_id: str | None = None,
+    ) -> bool:
+        ...
+
+    async def find_booking_by_fingerprint(self, fingerprint: str) -> object | None:
+        ...
+
+    async def reserve_booking(
+        self,
+        *,
+        fingerprint: str,
+        memory: object,
+        request_id: str | None = None,
+    ) -> bool:
+        ...
+
+    async def persist_booking_confirmed(
+        self,
+        *,
+        fingerprint: str,
+        memory: object,
+        calcom_uid: str,
+        external_status: str | None,
+        booking_time: datetime,
+        validation_state: str,
+        request_id: str | None = None,
+    ) -> bool:
+        ...
+
+    async def create_notification_delivery(self, payload: object) -> object:
+        ...
+
+    async def get_notification_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> object | None:
+        ...
+
+    async def get_successful_notification_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> object | None:
+        ...
+
+    async def list_notifications_by_booking_fingerprint(
+        self,
+        booking_fingerprint: str,
+    ) -> list[object]:
+        ...
+
+    async def mark_notification_sending(self, notification_id: str) -> object | None:
+        ...
+
+    async def mark_notification_sent(
+        self,
+        notification_id: str,
+        *,
+        provider_request_id: str | None,
+    ) -> object | None:
+        ...
+
+    async def mark_notification_retrying(
+        self,
+        notification_id: str,
+        *,
+        error_detail: str,
+    ) -> object | None:
+        ...
+
+    async def mark_notification_failed(
+        self,
+        notification_id: str,
+        *,
+        error_detail: str,
+    ) -> object | None:
+        ...
+
+    async def mark_notification_retry_exhausted(
+        self,
+        notification_id: str,
+        *,
+        error_detail: str,
+    ) -> object | None:
+        ...
+
 
 def safe_enqueue(
     sink: RuntimePersistenceSink | None,
@@ -77,7 +179,16 @@ def safe_enqueue(
         return True
     try:
         method = getattr(sink, method_name)
-        return bool(method(request_id=request_id, **kwargs))
+        queued = bool(method(request_id=request_id, **kwargs))
+        if not queued:
+            log_event(
+                logger,
+                "persistence_enqueue_dropped",
+                event_type=method_name,
+                request_id=request_id,
+                reason="sink_rejected_event",
+            )
+        return queued
     except Exception as exc:
         log_event(
             logger,

@@ -47,6 +47,15 @@ class BookingContinuityMemory:
     active_correction: str | None = None
     corrected_fields: tuple[str, ...] = ()
     last_summary_fingerprint: str | None = None
+    calcom_uid: str | None = None
+    external_status: str | None = None
+    booking_validation_state: str | None = None
+    notification_id: str | None = None
+    notification_status: str | None = None
+    notification_attempts: int = 0
+    notification_error: str | None = None
+    fulfillment_status: str | None = None
+    fulfillment_language: str | None = None
     last_updated_turn: int = 0
 
 
@@ -196,6 +205,33 @@ class CallMemoryEngine:
                 )
                 self.booking.last_summary_fingerprint = _value_or_none(
                     getattr(booking, "last_summary_fingerprint", None)
+                )
+                self.booking.calcom_uid = _value_or_none(
+                    getattr(booking, "calcom_uid", None)
+                )
+                self.booking.external_status = _value_or_none(
+                    getattr(booking, "external_status", None)
+                )
+                self.booking.booking_validation_state = _value_or_none(
+                    getattr(booking, "booking_validation_state", None)
+                )
+                self.booking.notification_id = _value_or_none(
+                    getattr(booking, "notification_id", None)
+                )
+                self.booking.notification_status = _value_or_none(
+                    getattr(booking, "notification_status", None)
+                )
+                self.booking.notification_attempts = int(
+                    getattr(booking, "notification_attempts", 0) or 0
+                )
+                self.booking.notification_error = _value_or_none(
+                    getattr(booking, "notification_error", None)
+                )
+                self.booking.fulfillment_status = _value_or_none(
+                    getattr(booking, "fulfillment_status", None)
+                )
+                self.booking.fulfillment_language = _value_or_none(
+                    getattr(booking, "fulfillment_language", None)
                 )
             self.booking.last_updated_turn = self._turn_index
 
@@ -397,6 +433,8 @@ class CallMemoryEngine:
             f"- caller_name: {self.caller.name or 'unknown'}; phone_number: {self.caller.phone_number or 'unknown'}",
             f"- booking_stage: {self.booking.stage}; booking_captured: {known or 'none'}; pending: {pending}",
             f"- confirmation: awaiting={self.booking.awaiting_confirmation}; completed={self.booking.confirmation_completed}",
+            f"- booking_truth: calcom_uid={self.booking.calcom_uid or 'none'}; external_status={self.booking.external_status or 'none'}; validation={self.booking.booking_validation_state or 'none'}",
+            f"- fulfillment: notification_status={self.booking.notification_status or 'none'}; attempts={self.booking.notification_attempts}; fulfillment_status={self.booking.fulfillment_status or 'none'}; language={self.booking.fulfillment_language or self.language.active_language}",
             f"- language: active={self.language.active_language}; previous={self.language.previous_language or 'none'}; dominant={self.language.dominant_language}; generation={self.language.generation}",
             f"- corrections: active={corrections}; total={sum(self.correction.corrected_fields.values())}",
             f"- unresolved: {unresolved}",
@@ -410,11 +448,12 @@ class CallMemoryEngine:
             return injection
         compact_lines = [
             "Runtime memory:",
-            f"- caller={self.caller.name or 'unknown'}/{self.caller.phone_number or 'unknown'}",
-            f"- booking={self.booking.stage}; known={_compact_known(self.booking.values)}; pending={pending}",
-            f"- confirm={int(self.booking.awaiting_confirmation)}/{int(self.booking.confirmation_completed)}; lang={self.language.active_language}; corr={corrections}",
-            f"- unresolved={unresolved}; escalation={escalation}",
-            "- rule: ask one unknown field; never re-ask known fields.",
+            f"- caller_name: {self.caller.name or 'unknown'}; phone_number={self.caller.phone_number or 'unknown'}",
+            f"- booking_stage: {self.booking.stage}; known={_compact_known(self.booking.values)}; pending: {pending}",
+            f"- confirm={int(self.booking.awaiting_confirmation)}/{int(self.booking.confirmation_completed)}; calcom={self.booking.calcom_uid or 'none'}; lang={self.language.active_language}; corr={corrections}",
+            f"- fulfill={self.booking.notification_status or 'none'}/{self.booking.fulfillment_status or 'none'}; attempts={self.booking.notification_attempts}",
+            f"- unresolved={unresolved}; escalation: {escalation}",
+            "- ask_policy: ask one unknown field; never re-ask known fields.",
         ]
         compact = "\n".join(compact_lines)
         if len(compact) <= max_chars:
@@ -509,12 +548,12 @@ def _join_pairs(values: dict[str, str]) -> str:
 
 def _compact_known(values: dict[str, str]) -> str:
     labels = {
-        "customer_name": "name",
-        "phone_number": "phone",
-        "service_type": "service",
-        "appointment_date": "date",
-        "appointment_time": "time",
-        "doctor_preference": "doctor",
+        "customer_name": "customer_name",
+        "phone_number": "phone_number",
+        "service_type": "service_type",
+        "appointment_date": "appointment_date",
+        "appointment_time": "appointment_time",
+        "doctor_preference": "doctor_preference",
         "notes": "notes",
     }
     return ",".join(

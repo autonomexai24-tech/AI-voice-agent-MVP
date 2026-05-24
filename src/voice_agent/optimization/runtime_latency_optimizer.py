@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import statistics
 import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -170,6 +171,7 @@ class RuntimeLatencyProfiler:
         cache_misses: int | None = None,
     ) -> LatencyProfileSnapshot:
         snapshot = self.snapshot()
+        percentiles = _percentile_breakdown(self._measurements)
         log_event(
             logger,
             "runtime_latency_summary",
@@ -188,6 +190,10 @@ class RuntimeLatencyProfiler:
             or snapshot.component_latencies.get("tts_start"),
             total_response_time=snapshot.total_response_time,
             response_latency=snapshot.total_response_time,
+            latency_p50_ms=percentiles["overall"]["p50"],
+            latency_p95_ms=percentiles["overall"]["p95"],
+            latency_p99_ms=percentiles["overall"]["p99"],
+            per_stage_breakdown=percentiles["components"],
             over_target_components=list(snapshot.over_target_components),
         )
         return snapshot
@@ -245,3 +251,40 @@ class RuntimeLatencyOptimizer:
             cache_hits=prompt_stats.hits + retrieval_stats.hits,
             cache_misses=prompt_stats.misses + retrieval_stats.misses,
         )
+
+
+def _percentile_breakdown(
+    measurements: list[LatencyMeasurement],
+) -> dict[str, object]:
+    values = [measurement.latency_ms for measurement in measurements]
+    components: dict[str, list[float]] = {}
+    for measurement in measurements:
+        components.setdefault(measurement.component, []).append(measurement.latency_ms)
+    return {
+        "overall": _percentiles(values),
+        "components": {
+            component: _percentiles(component_values)
+            for component, component_values in sorted(components.items())
+        },
+    }
+
+
+def _percentiles(values: list[float]) -> dict[str, float | None]:
+    clean = sorted(float(value) for value in values if value >= 0)
+    if not clean:
+        return {"p50": None, "p95": None, "p99": None}
+    return {
+        "p50": round(statistics.median(clean), 3),
+        "p95": round(_percentile(clean, 95), 3),
+        "p99": round(_percentile(clean, 99), 3),
+    }
+
+
+def _percentile(sorted_values: list[float], percentile: int) -> float:
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    index = (len(sorted_values) - 1) * (percentile / 100)
+    lower = int(index)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = index - lower
+    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight

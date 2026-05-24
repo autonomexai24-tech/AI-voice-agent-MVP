@@ -113,6 +113,28 @@ def test_health_and_readiness_endpoints_are_container_friendly() -> None:
     assert readiness_response.json()["database_configured"] is False
 
 
+def test_deployment_health_live_and_diagnostics_are_operational_surfaces() -> None:
+    app = create_app()
+
+    with TestClient(app) as client:
+        health_response = client.get("/health")
+        live_response = client.get("/live")
+        diagnostics_response = client.get("/internal/v1/deployment/diagnostics")
+        full_ready_response = client.get("/ready")
+
+    assert health_response.status_code == 200
+    assert health_response.json()["status"] == "ok"
+    assert live_response.status_code == 200
+    assert "runtime" in live_response.json()
+    assert diagnostics_response.status_code == 200
+    diagnostics = diagnostics_response.json()
+    assert diagnostics["dependencies"]["postgres"]["status"] == "disabled"
+    assert diagnostics["dependencies"]["worker"]["status"] == "unknown"
+    assert diagnostics["runtime"]["active_calls"] == 0
+    assert full_ready_response.status_code == 503
+    assert full_ready_response.json()["error"]["code"] == "deployment_not_ready"
+
+
 def test_configured_app_initializes_database_schema_on_startup(monkeypatch) -> None:
     monkeypatch.delenv("INITIALIZE_DATABASE_ON_STARTUP", raising=False)
     events: list[str] = []

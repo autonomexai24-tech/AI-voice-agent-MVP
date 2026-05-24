@@ -73,6 +73,7 @@ class HumanHandoffPayload:
     active_language: str
     language_note: str
     escalation_reason: str
+    notification_state: dict[str, Any]
     workflow_state: str
     memory_summary: str
     correction_history: dict[str, Any]
@@ -545,15 +546,31 @@ class HumanTakeoverRuntime:
     ) -> HumanHandoffPayload:
         started_at = self._clock()
         language = language or default_language_snapshot()
+        snapshot = memory.runtime_memory.snapshot()
+        notification_state = {
+            "notification_id": snapshot.booking.notification_id,
+            "notification_status": snapshot.booking.notification_status,
+            "retry_status": _notification_retry_status(
+                snapshot.booking.notification_status,
+                snapshot.booking.notification_attempts,
+            ),
+            "failed_attempts": snapshot.booking.notification_attempts,
+            "fulfillment_state": snapshot.booking.fulfillment_status,
+            "delivery_status": snapshot.booking.notification_status,
+            "error_detail": snapshot.booking.notification_error,
+            "fulfillment_language": (
+                snapshot.booking.fulfillment_language or language.active_language
+            ),
+        }
         log_event(
             logger,
             "handoff_started",
             request_id=request_id,
             session_id=memory.session_id,
             escalation_reason=reason,
+            notification_state=notification_state,
             workflow_state=workflow_state,
         )
-        snapshot = memory.runtime_memory.snapshot()
         handoff = HumanHandoffPayload(
             session_id=memory.session_id,
             caller_identity={
@@ -578,6 +595,7 @@ class HumanTakeoverRuntime:
             active_language=language.active_language,
             language_note=_language_note(language),
             escalation_reason=reason,
+            notification_state=notification_state,
             workflow_state=workflow_state,
             memory_summary=memory.runtime_memory.build_injection(max_chars=self._handoff_max_chars),
             correction_history={
@@ -948,6 +966,20 @@ def _language_note(language: SessionLanguageSnapshot) -> str:
         previous = LANGUAGE_LABELS.get(language.previous_language, language.previous_language.title())
         parts.append(f"Caller occasionally mixes {previous}.")
     return " ".join(parts)
+
+
+def _notification_retry_status(status: str | None, attempts: int) -> str:
+    if status == "retry_exhausted":
+        return "exhausted"
+    if status == "retrying":
+        return "retrying"
+    if status in {"sent", "delivered"}:
+        return "complete"
+    if status == "failed":
+        return "failed"
+    if attempts > 0:
+        return "pending_retry"
+    return "not_started"
 
 
 def _localized_handoff_message(

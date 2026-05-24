@@ -4,11 +4,12 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable
 
 from voice_agent.booking.extraction import looks_like_booking_request
-from voice_agent.config import BusinessConfig
+from voice_agent.booking.legacy import BookingCalendar
+from voice_agent.booking.runtime import BookingNotificationSink
+from voice_agent.config import BusinessConfig, CalComConfig
 from voice_agent.conversational_booking import BookingFlowResult, ConversationalBookingFlow
 from voice_agent.language import SessionLanguageSnapshot, default_language_snapshot
 from voice_agent.logging_config import get_logger, log_event
@@ -22,34 +23,14 @@ from voice_agent.realtime_prompt_manager import PromptIntent
 from voice_agent.retrieval import FAQRetrievalEngine, FAQRetrievalResult
 from voice_agent.runtime_persistence import RuntimePersistenceSink
 from voice_agent.session_memory import CallSessionMemory
+from voice_agent.orchestration.runtime_states import (
+    ALL_RUNTIME_STATES,
+    RUNTIME_ALLOWED_TRANSITIONS,
+    ConversationRuntimeState,
+    IntentRoute,
+)
 
 logger = get_logger(__name__)
-
-
-class ConversationRuntimeState(str, Enum):
-    IDLE = "idle"
-    GREETING = "greeting"
-    SERVICE_DISCOVERY = "service_discovery"
-    BOOKING_ACTIVE = "booking_active"
-    BOOKING_CONFIRMATION = "booking_confirmation"
-    FAQ_RESPONSE = "faq_response"
-    ESCALATION_PENDING = "escalation_pending"
-    HUMAN_HANDOVER = "human_handover"
-    CALL_ENDING = "call_ending"
-    INTERRUPTION_RECOVERY = "interruption_recovery"
-    CLARIFICATION = "clarification"
-
-
-class IntentRoute(str, Enum):
-    BOOKING = "booking"
-    FAQ = "faq"
-    ESCALATION = "escalation"
-    INTERRUPTION = "interruption"
-    CORRECTION = "correction"
-    GREETING = "greeting"
-    UNCLEAR = "unclear"
-    SERVICE_DISCOVERY = "service_discovery"
-    CALL_ENDING = "call_ending"
 
 
 @dataclass(frozen=True)
@@ -98,115 +79,6 @@ class _IntentClassification:
     matched_service: str | None = None
 
 
-_ALLOWED_TRANSITIONS: dict[ConversationRuntimeState, frozenset[ConversationRuntimeState]] = {
-    ConversationRuntimeState.IDLE: frozenset(
-        {
-            ConversationRuntimeState.GREETING,
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.GREETING: frozenset(
-        {
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.INTERRUPTION_RECOVERY,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.SERVICE_DISCOVERY: frozenset(
-        {
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.INTERRUPTION_RECOVERY,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.BOOKING_ACTIVE: frozenset(
-        {
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.BOOKING_CONFIRMATION,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.INTERRUPTION_RECOVERY,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.BOOKING_CONFIRMATION: frozenset(
-        {
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.INTERRUPTION_RECOVERY,
-            ConversationRuntimeState.HUMAN_HANDOVER,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.FAQ_RESPONSE: frozenset(
-        {
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.INTERRUPTION_RECOVERY,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.ESCALATION_PENDING: frozenset(
-        {
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.BOOKING_CONFIRMATION,
-            ConversationRuntimeState.HUMAN_HANDOVER,
-            ConversationRuntimeState.CLARIFICATION,
-            ConversationRuntimeState.CALL_ENDING,
-        }
-    ),
-    ConversationRuntimeState.HUMAN_HANDOVER: frozenset(
-        {
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.BOOKING_CONFIRMATION,
-            ConversationRuntimeState.CALL_ENDING,
-        }
-    ),
-    ConversationRuntimeState.CALL_ENDING: frozenset(),
-    ConversationRuntimeState.INTERRUPTION_RECOVERY: frozenset(
-        {
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.BOOKING_CONFIRMATION,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-    ConversationRuntimeState.CLARIFICATION: frozenset(
-        {
-            ConversationRuntimeState.SERVICE_DISCOVERY,
-            ConversationRuntimeState.BOOKING_ACTIVE,
-            ConversationRuntimeState.FAQ_RESPONSE,
-            ConversationRuntimeState.ESCALATION_PENDING,
-            ConversationRuntimeState.INTERRUPTION_RECOVERY,
-            ConversationRuntimeState.CALL_ENDING,
-            ConversationRuntimeState.CLARIFICATION,
-        }
-    ),
-}
-
-_ALL_STATES = frozenset(ConversationRuntimeState)
 _BOOKING_RETRY_PREFIXES = (
     "invalid_phone_number:",
     "invalid_time:",
@@ -255,6 +127,9 @@ class ConversationOrchestrator:
         booking_flow: ConversationalBookingFlow | None = None,
         faq_retrieval_engine: FAQRetrievalEngine | None = None,
         persistence_sink: RuntimePersistenceSink | None = None,
+        calcom_config: CalComConfig | None = None,
+        booking_calendar: BookingCalendar | None = None,
+        booking_notification_sink: BookingNotificationSink | None = None,
         human_takeover_runtime: HumanTakeoverRuntime | None = None,
         initial_state: ConversationRuntimeState = ConversationRuntimeState.IDLE,
         max_retries_per_key: int = 3,
@@ -266,6 +141,9 @@ class ConversationOrchestrator:
         self._booking_flow = booking_flow or ConversationalBookingFlow(
             business_config,
             persistence_sink=persistence_sink,
+            calcom_config=calcom_config,
+            calendar=booking_calendar,
+            notification_sink=booking_notification_sink,
         )
         self._faq_retrieval_engine = faq_retrieval_engine or FAQRetrievalEngine(top_k=1)
         self._human_takeover_runtime = human_takeover_runtime or HumanTakeoverRuntime(clock=clock)
@@ -292,13 +170,16 @@ class ConversationOrchestrator:
 
     def snapshot(self) -> ConversationRuntimeSnapshot:
         with self._lock:
-            allowed = _ALLOWED_TRANSITIONS[self._current_state]
+            allowed = RUNTIME_ALLOWED_TRANSITIONS[self._current_state]
             return ConversationRuntimeSnapshot(
                 current_state=self._current_state,
                 previous_state=self._previous_state,
                 allowed_transitions=tuple(sorted(allowed, key=lambda state: state.value)),
                 blocked_transitions=tuple(
-                    sorted(_ALL_STATES - allowed - {self._current_state}, key=lambda state: state.value)
+                    sorted(
+                        ALL_RUNTIME_STATES - allowed - {self._current_state},
+                        key=lambda state: state.value,
+                    )
                 ),
                 recovery_state=self._recovery_state,
                 retry_counts=dict(self._retry_counts),
@@ -321,11 +202,12 @@ class ConversationOrchestrator:
         with self._lock:
             if next_state == self._current_state:
                 return True
-            if next_state not in _ALLOWED_TRANSITIONS[self._current_state]:
+            if next_state not in RUNTIME_ALLOWED_TRANSITIONS[self._current_state]:
                 log_event(
                     logger,
                     "state_transition",
                     request_id=request_id,
+                    call_id=self._session_id,
                     session_id=self._session_id,
                     conversation_state=self._current_state.value,
                     attempted_state=next_state.value,
@@ -341,6 +223,7 @@ class ConversationOrchestrator:
                 logger,
                 "state_transition",
                 request_id=request_id,
+                call_id=self._session_id,
                 session_id=self._session_id,
                 previous_state=previous.value,
                 conversation_state=next_state.value,
@@ -364,8 +247,7 @@ class ConversationOrchestrator:
         cleaned = _clean(transcript)
         language = language or default_language_snapshot()
         self._turn_index += 1
-        memory.update_language(language.active_language, request_id=request_id)
-        memory.runtime_memory.update_language(language, request_id=request_id)
+        memory.update_language(language, request_id=request_id)
 
         classification = self._classify(
             cleaned,
@@ -378,6 +260,7 @@ class ConversationOrchestrator:
             logger,
             "intent_route",
             request_id=request_id,
+            call_id=self._session_id,
             session_id=self._session_id,
             route=classification.route.value,
             reason=classification.reason,
@@ -465,6 +348,7 @@ class ConversationOrchestrator:
                 logger,
                 "conversation_orchestration_failed",
                 request_id=request_id,
+                call_id=self._session_id,
                 session_id=self._session_id,
                 error_type=type(exc).__name__,
                 conversation_state=self.current_state.value,
@@ -865,6 +749,7 @@ class ConversationOrchestrator:
                 logger,
                 "retry_count",
                 request_id=request_id,
+                call_id=self._session_id,
                 session_id=self._session_id,
                 retry_key=key,
                 retry_count=count,
@@ -888,6 +773,7 @@ class ConversationOrchestrator:
             logger,
             "retry_count",
             request_id=request_id,
+            call_id=self._session_id,
             session_id=self._session_id,
             retry_key=key,
             retry_count=count,
@@ -942,6 +828,7 @@ class ConversationOrchestrator:
         log_event(
             logger,
             "conversation_state",
+            call_id=self._session_id,
             session_id=self._session_id,
             conversation_state=decision.current_state.value,
             previous_state=decision.previous_state.value if decision.previous_state else None,
@@ -981,8 +868,13 @@ def _state_for_booking_result(
 
 
 def _booking_active(memory: CallSessionMemory) -> bool:
+    values = {
+        field: value
+        for field, value in memory.booking_values().items()
+        if getattr(field, "value", field) != "language"
+    }
     return bool(
-        memory.booking_values()
+        values
         or memory.booking.awaiting_confirmation
         or memory.booking.confirmation_completed
         or memory.booking_stage.value != "idle"

@@ -9,6 +9,12 @@ from voice_agent.config import BusinessConfig
 from voice_agent.conversational_booking import ConversationalBookingFlow
 from voice_agent.language import SessionLanguageRouter, default_language_snapshot
 from voice_agent.session_memory import CallSessionMemory
+from booking_runtime_fakes import (
+    FakeBookingRuntimeStore,
+    FakeCalendar,
+    calcom_config,
+    slot_tomorrow,
+)
 
 
 def test_structured_extraction_collects_incremental_booking_entities() -> None:
@@ -232,7 +238,12 @@ def test_confirmation_and_completion_are_deterministic() -> None:
 
 async def _run_confirmation_test() -> None:
     memory = CallSessionMemory(session_id="booking-confirmation")
-    flow = ConversationalBookingFlow(_business_config())
+    flow = ConversationalBookingFlow(
+        _business_config(),
+        calcom_config=calcom_config(),
+        calendar=FakeCalendar(slots=(slot_tomorrow(18),)),
+        persistence_sink=FakeBookingRuntimeStore(),
+    )
 
     await flow.handle_turn(
         "I need dental cleaning tomorrow at 6 PM",

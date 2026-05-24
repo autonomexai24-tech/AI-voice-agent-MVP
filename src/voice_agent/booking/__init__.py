@@ -19,9 +19,10 @@ from voice_agent.booking.legacy import (
     BookingConfirmationEvent,
     BookingDetails,
     BookingTurnResult,
-    BookingWorkflowOrchestrator,
-    TimePreference,
 )
+from voice_agent.booking.runtime import BookingRuntimeResult
+from voice_agent.booking.utils import TimePreference
+from voice_agent.validation import RuntimeIntegrityValidator
 
 
 def __getattr__(name: str):
@@ -52,11 +53,12 @@ __all__ = [
     "BookingField",
     "BookingFieldValue",
     "BookingIssue",
+    "BookingRuntimeResult",
     "BookingStateSnapshot",
     "BookingTurnResult",
     "BookingValidationResult",
     "BookingIntelligenceWorkflow",
     "BookingWorkflowResult",
-    "BookingWorkflowOrchestrator",
+    "RuntimeIntegrityValidator",
     "TimePreference",
 ]

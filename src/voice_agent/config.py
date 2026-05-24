@@ -197,6 +197,17 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class WorkerResilienceConfig:
+    worker_id: str
+    heartbeat_interval_seconds: float
+    stale_after_seconds: float
+    drain_timeout_seconds: float
+    max_call_duration_seconds: float
+    call_timeout_warning_seconds: float
+    health_port: int
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     livekit: LiveKitConfig
     sarvam: SarvamConfig
@@ -207,6 +218,7 @@ class AgentConfig:
     calcom: CalComConfig
     fast2sms: Fast2SMSConfig
     database: DatabaseConfig
+    worker: WorkerResilienceConfig
     greeting_text: str
     disconnect_after_greeting: bool
     log_level: str
@@ -292,6 +304,37 @@ def load_config(
         errors,
         minimum=0.1,
     )
+    worker_heartbeat_interval_seconds = _float(
+        "WORKER_HEARTBEAT_INTERVAL_SECONDS",
+        10.0,
+        errors,
+        minimum=1.0,
+    )
+    worker_stale_after_seconds = _float(
+        "WORKER_STALE_AFTER_SECONDS",
+        60.0,
+        errors,
+        minimum=5.0,
+    )
+    worker_drain_timeout_seconds = _float(
+        "WORKER_DRAIN_TIMEOUT_SECONDS",
+        30.0,
+        errors,
+        minimum=0.0,
+    )
+    max_call_duration_seconds = _float(
+        "MAX_CALL_DURATION_SECONDS",
+        1800.0,
+        errors,
+        minimum=30.0,
+    )
+    call_timeout_warning_seconds = _float(
+        "CALL_TIMEOUT_WARNING_SECONDS",
+        15.0,
+        errors,
+        minimum=0.0,
+    )
+    worker_health_port = _int("WORKER_HEALTH_PORT", 8081, errors, minimum=1)
 
     if frame_ms and output_sample_rate and (output_sample_rate * frame_ms) % 1000 != 0:
         errors.append("AUDIO_FRAME_MS must divide evenly into OUTPUT_SAMPLE_RATE sample frames")
@@ -402,6 +445,15 @@ def load_config(
             retry_backoff_seconds=database_retry_backoff_seconds,
             queue_max_items=database_queue_max_items,
             drain_timeout_seconds=database_drain_timeout_seconds,
+        ),
+        worker=WorkerResilienceConfig(
+            worker_id=_get("WORKER_ID", f"voice-worker-{os.getpid()}"),
+            heartbeat_interval_seconds=worker_heartbeat_interval_seconds,
+            stale_after_seconds=worker_stale_after_seconds,
+            drain_timeout_seconds=worker_drain_timeout_seconds,
+            max_call_duration_seconds=max_call_duration_seconds,
+            call_timeout_warning_seconds=call_timeout_warning_seconds,
+            health_port=worker_health_port,
         ),
         greeting_text=greeting_text,
         disconnect_after_greeting=_bool("DISCONNECT_AFTER_GREETING", True),

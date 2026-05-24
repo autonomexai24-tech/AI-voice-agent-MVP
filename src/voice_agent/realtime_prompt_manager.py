@@ -362,7 +362,7 @@ class RealtimePromptManager:
                 self._prompt_cache.language_fragment(language),
                 _truncate(memory_block, 520),
                 _truncate(faq_block, 220),
-                "Reply in 1-2 short sentences; ask one missing field; refuse outside scope.",
+                "ask_policy: reply in 1-2 short sentences; ask one missing field; refuse outside scope.",
             )
             if section.strip()
         )
@@ -437,6 +437,7 @@ class RealtimePromptManager:
             f"- booking_stage: {memory.booking_stage.value}; pending: {pending}",
             f"- booking_captured: {captured or 'none'}",
             f"- awaiting_confirmation: {memory.booking.awaiting_confirmation}; confirmation_completed: {memory.booking.confirmation_completed}",
+            f"- booking_truth: calcom_uid={memory.booking.calcom_uid or 'none'}; external_status={memory.booking.external_status or 'none'}; validation={memory.booking.booking_validation_state or 'none'}",
             f"- active_correction: {correction}",
             f"- language_state: active={language.active_language}; previous={language.previous_language or 'none'}; generation={language.generation}",
             f"- escalation_state: {escalation}",

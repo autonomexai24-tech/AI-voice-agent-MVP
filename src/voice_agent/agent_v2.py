@@ -1,6 +1,6 @@
 """Official LiveKit + Sarvam plugin architecture agent.
 
-Replaces the custom 4-queue pipeline in agent_phase1d.py with:
+Replaces the removed custom 4-queue phase-agent pipeline with:
 - sarvam.STT plugin (handles VAD, endpointing, flush signals)
 - openai.LLM plugin (handles chat completions)
 - sarvam.TTS plugin (handles speech synthesis)
@@ -15,12 +15,18 @@ through the instructions parameter.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterable
+import inspect
+import time
+from typing import Any
+
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai, sarvam
 
 from voice_agent.conversation.orchestrator import ConversationOrchestrator as TurnStateOrchestrator
 from voice_agent.conversation.states import ConversationState, PendingAction
-from voice_agent.config import BusinessConfig
+from voice_agent.config import BusinessConfig, CalComConfig
+from voice_agent.booking.runtime import BookingNotificationSink
 from voice_agent.human_takeover import HumanTakeoverRuntime
 from voice_agent.language import SessionLanguageRouter, default_language_snapshot
 from voice_agent.logging_config import get_logger, log_event
@@ -69,6 +75,8 @@ class SimpleClinicAgent(Agent):
         tts_model: str = "bulbul:v3",
         tts_speaker: str = "kavya",
         business_config: BusinessConfig | None = None,
+        calcom_config: CalComConfig | None = None,
+        booking_notification_sink: BookingNotificationSink | None = None,
         session_id: str = "livekit-agent-session",
         persistence_sink: RuntimePersistenceSink | None = None,
     ) -> None:
@@ -76,6 +84,7 @@ class SimpleClinicAgent(Agent):
         self._persistence_sink = persistence_sink
         self._business_config = business_config
         self._optimizer = RuntimeLatencyOptimizer()
+        self._current_tts_language_code = tts_language_code
         self._prompt_manager = RealtimePromptManager(
             prompt_cache=self._optimizer.prompt_cache,
             retrieval_cache=self._optimizer.retrieval_cache,
@@ -100,6 +109,8 @@ class SimpleClinicAgent(Agent):
                     retrieval_cache=self._optimizer.retrieval_cache,
                 ),
                 persistence_sink=persistence_sink,
+                calcom_config=calcom_config,
+                booking_notification_sink=booking_notification_sink,
                 human_takeover_runtime=self.human_takeover_runtime,
             )
             if business_config is not None
@@ -130,6 +141,13 @@ class SimpleClinicAgent(Agent):
             tts_model=tts_model,
             tts_speaker=tts_speaker,
             instructions_chars=len(instructions),
+        )
+        log_event(
+            logger,
+            "tts_language_runtime_validated",
+            tts_language_code=tts_language_code,
+            dynamic_language_update_supported=True,
+            update_strategy="sarvam_tts_options_target_language_code",
         )
 
     async def on_enter(self):
@@ -184,9 +202,9 @@ class SimpleClinicAgent(Agent):
                     is_final=True,
                 )
             ).snapshot
+        self._update_tts_language(language.sarvam_language_code, active_language=language.active_language)
         with self._optimizer.profiler.span("memory_assembly", request_id=None):
-            self.session_memory.update_language(language.active_language)
-            self.session_memory.runtime_memory.update_language(language)
+            self.session_memory.update_language(language)
         safe_enqueue(
             self._persistence_sink,
             "enqueue_transcript",
@@ -276,6 +294,88 @@ class SimpleClinicAgent(Agent):
                 prompt_size=runtime_prompt.prompt_chars,
                 compression_ratio=runtime_prompt.compression_ratio,
                 memory_pruned=runtime_prompt.memory_pruned,
+            )
+
+    async def llm_node(self, *args: Any, **kwargs: Any) -> AsyncIterable[Any]:
+        """Wrap LiveKit's LLM node to measure generation startup and completion."""
+        started_at = time.perf_counter()
+        first_chunk = True
+        result = super().llm_node(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        async for chunk in result:
+            if first_chunk:
+                self._optimizer.profiler.record(
+                    "gpt_response_start",
+                    (time.perf_counter() - started_at) * 1000,
+                    request_id=None,
+                )
+                first_chunk = False
+            yield chunk
+        self._optimizer.profiler.record(
+            "gpt",
+            (time.perf_counter() - started_at) * 1000,
+            request_id=None,
+        )
+
+    async def tts_node(self, *args: Any, **kwargs: Any) -> AsyncIterable[Any]:
+        """Wrap LiveKit's TTS node to measure first-audio and completion latency."""
+        started_at = time.perf_counter()
+        first_frame = True
+        result = super().tts_node(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        async for frame in result:
+            if first_frame:
+                self._optimizer.profiler.record(
+                    "tts_start",
+                    (time.perf_counter() - started_at) * 1000,
+                    request_id=None,
+                    target_language_code=self._current_tts_language_code,
+                )
+                first_frame = False
+            yield frame
+        self._optimizer.profiler.record(
+            "tts",
+            (time.perf_counter() - started_at) * 1000,
+            request_id=None,
+            target_language_code=self._current_tts_language_code,
+        )
+
+    def _update_tts_language(self, language_code: str, *, active_language: str) -> None:
+        if not language_code or language_code == self._current_tts_language_code:
+            return
+        previous = self._current_tts_language_code
+        tts = getattr(self, "tts", None)
+        opts = getattr(tts, "_opts", None)
+        if opts is None or not hasattr(opts, "target_language_code"):
+            log_event(
+                logger,
+                "tts_language_update_skipped",
+                previous_tts_language_code=previous,
+                next_tts_language_code=language_code,
+                active_language=active_language,
+                reason="sarvam_tts_options_unavailable",
+            )
+            return
+        try:
+            setattr(opts, "target_language_code", language_code)
+            self._current_tts_language_code = language_code
+            log_event(
+                logger,
+                "tts_language_updated",
+                previous_tts_language_code=previous,
+                next_tts_language_code=language_code,
+                active_language=active_language,
+            )
+        except Exception as exc:
+            log_event(
+                logger,
+                "tts_language_update_failed",
+                previous_tts_language_code=previous,
+                next_tts_language_code=language_code,
+                active_language=active_language,
+                error_type=type(exc).__name__,
             )
 
 

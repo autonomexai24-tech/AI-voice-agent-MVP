@@ -13,6 +13,12 @@ from voice_agent.orchestration import (
     IntentRoute,
 )
 from voice_agent.session_memory import CallSessionMemory
+from booking_runtime_fakes import (
+    FakeBookingRuntimeStore,
+    FakeCalendar,
+    calcom_config,
+    slot_tomorrow,
+)
 
 
 def test_booking_progression_is_runtime_owned() -> None:
@@ -306,7 +312,13 @@ def test_confirmed_booking_can_move_to_call_ending() -> None:
 
 async def _run_call_ending() -> None:
     memory = CallSessionMemory(session_id="orch-ending")
-    orchestrator = ConversationOrchestrator(_business_config(), session_id=memory.session_id)
+    orchestrator = ConversationOrchestrator(
+        _business_config(),
+        session_id=memory.session_id,
+        calcom_config=calcom_config(),
+        booking_calendar=FakeCalendar(slots=(slot_tomorrow(17),)),
+        persistence_sink=FakeBookingRuntimeStore(),
+    )
 
     for text in (
         "I need dental cleaning tomorrow evening",

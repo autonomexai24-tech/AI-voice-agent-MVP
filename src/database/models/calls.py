@@ -29,6 +29,11 @@ class CallModel(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     booking_outcome: Mapped[str | None] = mapped_column(String(64), index=True)
     escalation_triggered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False, index=True)
+    worker_id: Mapped[str | None] = mapped_column(String(96), index=True)
+    abandoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    termination_reason: Mapped[str | None] = mapped_column(String(128), index=True)
+    last_lifecycle_event: Mapped[str | None] = mapped_column(String(64), index=True)
 
     bookings = relationship("BookingModel", back_populates="call")
     transcripts = relationship("TranscriptModel", back_populates="call")

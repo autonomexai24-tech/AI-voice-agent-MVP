@@ -91,6 +91,41 @@ def test_ai_to_human_transition_assigns_operator_and_builds_compact_handoff() ->
     assert len(transition.handoff_payload.memory_summary) <= 900
 
 
+def test_handoff_payload_includes_notification_continuity() -> None:
+    runtime = HumanTakeoverRuntime()
+    memory = CallSessionMemory(session_id="takeover-notification")
+    memory.booking.notification_id = "notification-1"
+    memory.booking.notification_status = "retrying"
+    memory.booking.notification_attempts = 2
+    memory.booking.notification_error = "temporary provider outage"
+    memory.booking.fulfillment_status = "retrying"
+    memory.booking.fulfillment_language = "telugu"
+    memory.runtime_memory.update_from_session(memory)
+
+    transition = runtime.request_takeover(
+        memory=memory,
+        language=replace(
+            default_language_snapshot(),
+            active_language="telugu",
+            dominant_language="telugu",
+            openai_response_language="Telugu",
+        ),
+        reason="booking_failure_loop",
+    )
+
+    assert transition.handoff_payload is not None
+    assert transition.handoff_payload.notification_state == {
+        "notification_id": "notification-1",
+        "notification_status": "retrying",
+        "retry_status": "retrying",
+        "failed_attempts": 2,
+        "fulfillment_state": "retrying",
+        "delivery_status": "retrying",
+        "error_detail": "temporary provider outage",
+        "fulfillment_language": "telugu",
+    }
+
+
 def test_queue_supports_five_ai_calls_and_two_human_operators() -> None:
     clock = FakeClock()
     runtime = HumanTakeoverRuntime(
