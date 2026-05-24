@@ -15,6 +15,8 @@ class BusinessSettingsUpdate:
     business_type: str | None = None
     services: tuple[str, ...] | None = None
     receptionist_tone: str | None = None
+    receptionist_personality: str | None = None
+    faqs: tuple[dict, ...] | None = None
     default_language: str | None = None
     greeting_prompt: str | None = None
     refusal_policy: str | None = None
@@ -41,6 +43,8 @@ class BusinessSettingsRepository:
                 business_type=payload.business_type or "clinic",
                 services=list(payload.services or ()),
                 receptionist_tone=payload.receptionist_tone,
+                receptionist_personality=payload.receptionist_personality,
+                faqs=list(payload.faqs or ()),
                 default_language=payload.default_language or "english",
                 greeting_prompt=payload.greeting_prompt,
                 refusal_policy=payload.refusal_policy,
@@ -52,6 +56,8 @@ class BusinessSettingsRepository:
                 ("business_type", payload.business_type),
                 ("services", list(payload.services) if payload.services is not None else None),
                 ("receptionist_tone", payload.receptionist_tone),
+                ("receptionist_personality", payload.receptionist_personality),
+                ("faqs", list(payload.faqs) if payload.faqs is not None else None),
                 ("default_language", payload.default_language),
                 ("greeting_prompt", payload.greeting_prompt),
                 ("refusal_policy", payload.refusal_policy),

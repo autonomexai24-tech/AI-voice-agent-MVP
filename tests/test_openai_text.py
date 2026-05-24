@@ -4,7 +4,7 @@ import asyncio
 
 from voice_agent.config import BusinessConfig, OpenAIConfig
 from voice_agent.language import SessionLanguageRouter
-from voice_agent.providers.openai_text import OpenAIResponseClient, SYSTEM_PROMPT, extract_output_text
+from voice_agent.providers.openai_text import OpenAIResponseClient, extract_output_text
 
 
 class _FakeResponse:
@@ -55,8 +55,9 @@ async def _run_generate_response_test() -> None:
     assert response.text == "Sure, I can help with that."
     assert response.model == "gpt-4o-mini"
     assert response.language == "hinglish"
-    assert fake_client.responses.kwargs["instructions"].startswith(SYSTEM_PROMPT)
+    assert "Realtime context" in fake_client.responses.kwargs["instructions"] or "Runtime memory:" in fake_client.responses.kwargs["instructions"]
     assert "Respond in natural Hinglish" in fake_client.responses.kwargs["instructions"]
+    assert len(fake_client.responses.kwargs["instructions"]) <= 1500
     assert "Caller language: Hinglish" in fake_client.responses.kwargs["input"]
     assert fake_client.responses.kwargs["model"] == "gpt-4o-mini"
     assert fake_client.responses.kwargs["store"] is False

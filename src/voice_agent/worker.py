@@ -28,6 +28,8 @@ from voice_agent.agent_v2 import SimpleClinicAgent, build_instructions
 from voice_agent.business_prompt import BusinessPromptOrchestrator
 from voice_agent.config import ConfigError, load_config, load_project_dotenv
 from voice_agent.logging_config import configure_logging, get_logger, log_error, log_event
+from voice_agent.optimization.runtime_latency_optimizer import LATENCY_TARGETS_MS
+from voice_agent.runtime_context import build_runtime_context_loader
 from voice_agent.runtime_persistence import safe_enqueue
 
 logger = get_logger(__name__)
@@ -50,11 +52,15 @@ async def entrypoint(ctx: JobContext) -> None:
     """Called by the LiveKit Agents framework for each dispatched job.
 
     Flow:
-        1. Load config from .env
-        2. Connect to room (audio-only)
-        3. Build business instructions from config
-        4. Create SimpleClinicAgent with Sarvam STT/TTS + OpenAI LLM
-        5. Start AgentSession with turn_detection="stt"
+        1. Load infrastructure config from .env (API keys, models, URLs)
+        2. Load business context from PostgreSQL (with .env fallback)
+        3. Connect to room (audio-only)
+        4. Build business instructions from runtime context snapshot
+        5. Create SimpleClinicAgent with Sarvam STT/TTS + OpenAI LLM
+        6. Start AgentSession with turn_detection="stt"
+
+    Business context source priority:
+        PostgreSQL (live) → .env fallback (if DB row missing or query fails)
     """
     load_project_dotenv()
 
@@ -75,12 +81,57 @@ async def entrypoint(ctx: JobContext) -> None:
 
     configure_logging(config.log_level)
 
+    # --- Load business context from PostgreSQL (with .env fallback) ---
+    db_settings = DatabaseSettings.from_agent_config(config.database)
+    context_loader = build_runtime_context_loader(db_settings)
+
+    if context_loader is not None:
+        snapshot = await context_loader.load(
+            env_fallback=config.business,
+            env_greeting_prompt=config.greeting_text,
+        )
+    else:
+        from voice_agent.runtime_context import RuntimeContextSnapshot
+        snapshot = RuntimeContextSnapshot(
+            business=config.business,
+            context_source="env",
+            settings_id=None,
+            loaded_at=datetime.now(timezone.utc),
+            latency_ms=0.0,
+            default_language="english",
+            greeting_prompt=config.greeting_text,
+        )
+
+    business = snapshot.business
+
+    log_event(
+        logger,
+        "runtime_snapshot_created",
+        call_id=room_name,
+        context_source=snapshot.context_source,
+        settings_id=snapshot.settings_id,
+        runtime_loaded_at=snapshot.loaded_at.isoformat(),
+        runtime_load_latency_ms=snapshot.latency_ms,
+        business_name=business.name,
+        business_type=business.business_type,
+        services=list(business.services),
+        services_count=len(business.services),
+        faqs_count=len(business.faqs),
+        receptionist_tone=business.receptionist_tone,
+        receptionist_personality=business.receptionist_personality,
+        refusal_behavior=business.refusal_behavior,
+        default_language=snapshot.default_language,
+        greeting_prompt=snapshot.greeting_prompt,
+    )
+
     log_event(
         logger,
         "worker_connecting_to_room",
         room_name=room_name,
-        business_name=config.business.name,
-        services_count=len(config.business.services),
+        business_name=business.name,
+        services_count=len(business.services),
+        context_source=snapshot.context_source,
+        settings_id=snapshot.settings_id,
     )
 
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
@@ -95,8 +146,8 @@ async def entrypoint(ctx: JobContext) -> None:
         ],
     )
 
-    # --- Build business instructions ---
-    orchestrator = BusinessPromptOrchestrator(config.business)
+    # --- Build business instructions from runtime context ---
+    orchestrator = BusinessPromptOrchestrator(business, context_source=snapshot.context_source)
     business = await orchestrator.load()
     instructions = build_instructions(business)
 
@@ -108,6 +159,7 @@ async def entrypoint(ctx: JobContext) -> None:
         services_count=len(business.services),
         faqs_count=len(business.faqs),
         instructions_chars=len(instructions),
+        context_source=snapshot.context_source,
     )
 
     # --- Create agent with official Sarvam + OpenAI plugins ---
@@ -151,6 +203,10 @@ async def entrypoint(ctx: JobContext) -> None:
         room_name=room_name,
         turn_detection="stt",
         min_endpointing_delay=0.07,
+        streaming_first=True,
+        concurrency_target_ai_calls=5,
+        concurrency_target_human_operators=2,
+        latency_targets_ms=LATENCY_TARGETS_MS,
     )
 
     started_at = datetime.now(timezone.utc)
@@ -186,7 +242,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 ended_at=ended_at,
                 duration_seconds=max(0, int((ended_at - started_at).total_seconds())),
                 booking_outcome=booking_outcome,
-                escalation_triggered=False,
+                escalation_triggered=agent.session_memory.escalation_triggered,
             )
             await persistence_service.stop(
                 drain_timeout_seconds=config.database.drain_timeout_seconds

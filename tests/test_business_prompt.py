@@ -37,8 +37,12 @@ def test_business_prompt_answers_matching_faq() -> None:
     decision = asyncio.run(_prepare("What are your timings?"))
 
     assert decision.classification == "faq"
-    assert decision.generation_source == "local_guardrail"
-    assert decision.response_text == "We are open from 10 AM to 7 PM, Monday to Saturday."
+    assert decision.generation_source == "openai"
+    assert decision.response_text is None
+    assert decision.uses_model is True
+    assert decision.matched_faq == "What are your hours?"
+    assert decision.instructions is not None
+    assert "Business name: Smile Dental Clinic" in decision.instructions
 
 
 def test_business_prompt_builds_model_context_for_business_question() -> None:

@@ -214,6 +214,8 @@ class RealtimeInterruptionManager:
             interrupted_generation=interrupted_generation,
             new_generation=self._generation,
             latency_ms=latency_ms,
+            interruption_recovery=latency_ms,
+            interruption_recovery_ms=latency_ms,
             playback_queued_duration_ms=queued_duration_ms,
         )
         self._active_playback_work = None

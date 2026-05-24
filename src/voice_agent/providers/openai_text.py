@@ -8,13 +8,15 @@ from openai import AsyncOpenAI
 
 from voice_agent.business_prompt import BusinessPromptOrchestrator, SYSTEM_PROMPT
 from voice_agent.config import BusinessConfig, CalComConfig, Fast2SMSConfig, OpenAIConfig
-from voice_agent.conversational_booking import ConversationalBookingFlow
 from voice_agent.language import (
     SessionLanguageSnapshot,
     default_language_snapshot,
 )
 from voice_agent.logging_config import get_logger, log_event
-from voice_agent.prompts.composer import PromptContext, compose_prompt
+from voice_agent.optimization import RuntimeLatencyOptimizer
+from voice_agent.orchestration import ConversationOrchestrator
+from voice_agent.realtime_prompt_manager import PromptIntent, RealtimePromptManager
+from voice_agent.retrieval import FAQRetrievalEngine
 from voice_agent.runtime_persistence import RuntimePersistenceSink, safe_enqueue
 from voice_agent.session_memory import CallSessionMemory
 
@@ -52,8 +54,19 @@ class OpenAIResponseClient:
             session_id=session_id or "openai-response-client"
         )
         self._persistence_sink = persistence_sink
-        self._booking_flow = ConversationalBookingFlow(
+        self._optimizer = RuntimeLatencyOptimizer()
+        self._prompt_manager = RealtimePromptManager(
+            prompt_cache=self._optimizer.prompt_cache,
+            retrieval_cache=self._optimizer.retrieval_cache,
+            latency_profiler=self._optimizer.profiler,
+        )
+        self._conversation_orchestrator = ConversationOrchestrator(
             self._business_config,
+            session_id=self._session_memory.session_id,
+            faq_retrieval_engine=FAQRetrievalEngine(
+                top_k=1,
+                retrieval_cache=self._optimizer.retrieval_cache,
+            ),
             persistence_sink=persistence_sink,
         )
         self._calcom_config = calcom_config
@@ -79,15 +92,16 @@ class OpenAIResponseClient:
             raise ValueError("transcript must not be empty")
 
         language = language or default_language_snapshot()
-        self._session_memory.update_language(
-            language.active_language,
-            request_id=request_id,
-        )
-        self._session_memory.record_turn(
-            role="caller",
-            text=cleaned_transcript,
-            request_id=request_id,
-        )
+        with self._optimizer.profiler.span("memory_assembly", request_id=request_id):
+            self._session_memory.update_language(
+                language.active_language,
+                request_id=request_id,
+            )
+            self._session_memory.record_turn(
+                role="caller",
+                text=cleaned_transcript,
+                request_id=request_id,
+            )
         safe_enqueue(
             self._persistence_sink,
             "enqueue_transcript",
@@ -98,16 +112,20 @@ class OpenAIResponseClient:
             request_id=request_id,
         )
 
-        booking_result = await self._booking_flow.handle_turn(
-            cleaned_transcript,
-            memory=self._session_memory,
-            language=language,
-            request_id=request_id,
-        )
-        if booking_result.handled and booking_result.response_text is not None:
+        async with self._optimizer.profiler.async_span("orchestration", request_id=request_id):
+            orchestration_decision = await self._conversation_orchestrator.handle_turn(
+                cleaned_transcript,
+                memory=self._session_memory,
+                language=language,
+                request_id=request_id,
+            )
+        if (
+            orchestration_decision.handled
+            and orchestration_decision.response_text is not None
+        ):
             self._session_memory.record_turn(
                 role="assistant",
-                text=booking_result.response_text,
+                text=orchestration_decision.response_text,
                 request_id=request_id,
             )
             safe_enqueue(
@@ -115,12 +133,25 @@ class OpenAIResponseClient:
                 "enqueue_transcript",
                 call_id=self._session_memory.session_id,
                 speaker="assistant",
-                text=booking_result.response_text,
+                text=orchestration_decision.response_text,
                 language=language.active_language,
                 request_id=request_id,
             )
+            total_latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
+            self._optimizer.profiler.record(
+                "total_response",
+                total_latency_ms,
+                request_id=request_id,
+                prompt_size=0,
+            )
+            self._optimizer.log_response_summary(
+                request_id=request_id,
+                prompt_size=0,
+                compression_ratio=1.0,
+                memory_pruned=0,
+            )
             return AIResponse(
-                text=booking_result.response_text,
+                text=orchestration_decision.response_text,
                 model=self._config.model,
                 response_id=None,
                 language=language.active_language,
@@ -172,6 +203,18 @@ class OpenAIResponseClient:
                 language=language.active_language,
                 request_id=request_id,
             )
+            self._optimizer.profiler.record(
+                "total_response",
+                latency_ms,
+                request_id=request_id,
+                prompt_size=0,
+            )
+            self._optimizer.log_response_summary(
+                request_id=request_id,
+                prompt_size=0,
+                compression_ratio=1.0,
+                memory_pruned=0,
+            )
             return AIResponse(
                 text=decision.response_text,
                 model=self._config.model,
@@ -183,13 +226,14 @@ class OpenAIResponseClient:
             raise RuntimeError("business prompt decision did not include model inputs")
 
         business_context = await self._business_prompt.load()
-        model_instructions = compose_prompt(
-            PromptContext(
-                business=business_context,
-                language=language,
-                booking_memory=self._session_memory,
-            )
-        ).instructions
+        runtime_prompt = self._prompt_manager.compose(
+            transcript=cleaned_transcript,
+            business=business_context,
+            memory=self._session_memory,
+            language=language,
+            intent=_prompt_intent_from_decisions(decision, orchestration_decision.prompt_intent),
+            request_id=request_id,
+        )
 
         log_event(
             logger,
@@ -197,6 +241,15 @@ class OpenAIResponseClient:
             request_id=request_id,
             model=self._config.model,
             transcript_chars=len(cleaned_transcript),
+            prompt_chars=runtime_prompt.prompt_chars,
+            memory_injection_chars=runtime_prompt.memory_chars,
+            faq_injection_count=runtime_prompt.faq_injection_count,
+            faq_injection_chars=runtime_prompt.faq_injection_chars,
+            faq_retrieval_confidence=runtime_prompt.faq_retrieval_confidence,
+            faq_retrieval_latency_ms=runtime_prompt.faq_retrieval_latency_ms,
+            faq_retrieval_source=runtime_prompt.faq_retrieval_source,
+            prompt_recomposition_index=runtime_prompt.recomposition_index,
+            prompt_composition_latency_ms=runtime_prompt.composition_latency_ms,
             max_output_tokens=self._config.max_output_tokens,
             response_language=language.active_language,
             dominant_language=language.dominant_language,
@@ -204,13 +257,25 @@ class OpenAIResponseClient:
             language_generation=language.generation,
         )
         try:
+            gpt_started_at = time.perf_counter()
             response = await self._client.responses.create(
                 model=self._config.model,
-                instructions=model_instructions,
-                input=decision.input_text,
+                instructions=runtime_prompt.instructions,
+                input=runtime_prompt.input_text,
                 max_output_tokens=self._config.max_output_tokens,
                 temperature=0.3,
                 store=False,
+            )
+            gpt_latency_ms = round((time.perf_counter() - gpt_started_at) * 1000, 3)
+            self._optimizer.profiler.record(
+                "gpt",
+                gpt_latency_ms,
+                request_id=request_id,
+            )
+            self._optimizer.profiler.record(
+                "gpt_response_start",
+                gpt_latency_ms,
+                request_id=request_id,
             )
         except Exception:
             log_event(
@@ -228,6 +293,18 @@ class OpenAIResponseClient:
             raise RuntimeError("OpenAI response did not include output text")
 
         latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
+        self._optimizer.profiler.record(
+            "total_response",
+            latency_ms,
+            request_id=request_id,
+            prompt_size=runtime_prompt.prompt_chars,
+        )
+        self._optimizer.log_response_summary(
+            request_id=request_id,
+            prompt_size=runtime_prompt.prompt_chars,
+            compression_ratio=runtime_prompt.compression_ratio,
+            memory_pruned=runtime_prompt.memory_pruned,
+        )
         response_id = getattr(response, "id", None)
         log_event(
             logger,
@@ -293,6 +370,19 @@ def extract_output_text(response: Any) -> str:
             if isinstance(text, str):
                 chunks.append(text)
     return "".join(chunks)
+
+
+def _prompt_intent_from_decisions(
+    decision: Any,
+    runtime_intent: PromptIntent,
+) -> PromptIntent:
+    return PromptIntent(
+        classification=decision.classification or runtime_intent.classification,
+        generation_source=decision.generation_source or runtime_intent.generation_source,
+        matched_service=decision.matched_service or runtime_intent.matched_service,
+        requested_service=decision.requested_service or runtime_intent.requested_service,
+        matched_faq=decision.matched_faq or runtime_intent.matched_faq,
+    )
 
 
 def _default_business_config() -> BusinessConfig:

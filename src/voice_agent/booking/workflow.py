@@ -74,6 +74,12 @@ class BookingIntelligenceWorkflow:
         active_language = language.active_language
         if memory.booking.language != active_language:
             memory.booking.language = active_language
+        memory.runtime_memory.update_language(language, request_id=request_id)
+        memory.runtime_memory.update_from_session(
+            memory,
+            language=language,
+            request_id=request_id,
+        )
 
         if not cleaned:
             return self._handle_silence(memory, active_language, request_id=request_id)
@@ -299,6 +305,10 @@ class BookingIntelligenceWorkflow:
                 field_name=field.value,
                 pending_booking_fields=list(memory.pending_booking_fields),
             )
+            memory.runtime_memory.mark_unresolved_question(
+                field_name=field.value,
+                request_id=request_id,
+            )
             self._log_continuity(memory, request_id=request_id)
             return BookingWorkflowResult(
                 True,
@@ -325,6 +335,10 @@ class BookingIntelligenceWorkflow:
                     field_name=BookingField.NOTES.value,
                     optional=True,
                     pending_booking_fields=list(memory.pending_booking_fields),
+                )
+                memory.runtime_memory.mark_unresolved_question(
+                    field_name=BookingField.NOTES.value,
+                    request_id=request_id,
                 )
                 self._log_continuity(memory, request_id=request_id)
                 return BookingWorkflowResult(
@@ -420,6 +434,11 @@ class BookingIntelligenceWorkflow:
             attempt=attempt,
             booking_stage=memory.booking_stage.value,
         )
+        if issue.field is not None:
+            memory.runtime_memory.mark_unresolved_question(
+                field_name=issue.field.value,
+                request_id=request_id,
+            )
         if issue.severity == "error":
             log_event(
                 logger,
@@ -484,6 +503,10 @@ class BookingIntelligenceWorkflow:
             field_name=field.value,
             attempt=attempt,
             booking_stage=memory.booking_stage.value,
+        )
+        memory.runtime_memory.mark_unresolved_question(
+            field_name=field.value,
+            request_id=request_id,
         )
         self._log_continuity(memory, request_id=request_id)
         return BookingWorkflowResult(

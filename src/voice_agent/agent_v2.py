@@ -18,12 +18,16 @@ from __future__ import annotations
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai, sarvam
 
-from voice_agent.conversation.orchestrator import ConversationOrchestrator
+from voice_agent.conversation.orchestrator import ConversationOrchestrator as TurnStateOrchestrator
 from voice_agent.conversation.states import ConversationState, PendingAction
 from voice_agent.config import BusinessConfig
-from voice_agent.conversational_booking import ConversationalBookingFlow
+from voice_agent.human_takeover import HumanTakeoverRuntime
+from voice_agent.language import SessionLanguageRouter, default_language_snapshot
 from voice_agent.logging_config import get_logger, log_event
-from voice_agent.prompts.composer import PromptContext, compose_prompt
+from voice_agent.optimization import RuntimeLatencyOptimizer
+from voice_agent.orchestration import ConversationOrchestrator as RuntimeConversationOrchestrator
+from voice_agent.realtime_prompt_manager import PromptIntent, RealtimePromptManager
+from voice_agent.retrieval import FAQRetrievalEngine
 from voice_agent.runtime_persistence import RuntimePersistenceSink, safe_enqueue
 from voice_agent.session_memory import CallSessionMemory
 
@@ -31,13 +35,19 @@ logger = get_logger(__name__)
 
 
 def build_instructions(business: BusinessConfig) -> str:
-    """Build complete agent instructions from business configuration.
+    """Build compact bootstrap instructions from business configuration.
 
-    Combines the base system prompt, business context (services, FAQs,
-    tone, personality), guardrails, and language behavior into a single
-    instructions string for the Agent.
+    Per-turn dynamic instructions are recomposed by RealtimePromptManager
+    when caller text is available.
     """
-    return compose_prompt(PromptContext(business=business)).instructions
+    memory = CallSessionMemory(session_id="livekit-bootstrap")
+    return RealtimePromptManager().compose(
+        transcript="",
+        business=business,
+        memory=memory,
+        language=default_language_snapshot(),
+        intent=PromptIntent(classification="session_bootstrap"),
+    ).instructions
 
 
 class SimpleClinicAgent(Agent):
@@ -64,15 +74,33 @@ class SimpleClinicAgent(Agent):
     ) -> None:
         self.session_memory = CallSessionMemory(session_id=session_id)
         self._persistence_sink = persistence_sink
-        self.conversation = ConversationOrchestrator(
+        self._business_config = business_config
+        self._optimizer = RuntimeLatencyOptimizer()
+        self._prompt_manager = RealtimePromptManager(
+            prompt_cache=self._optimizer.prompt_cache,
+            retrieval_cache=self._optimizer.retrieval_cache,
+            latency_profiler=self._optimizer.profiler,
+        )
+        self._language_router = SessionLanguageRouter(
+            initial_language="english",
+            default_speaker=tts_speaker,
+        )
+        self.human_takeover_runtime = HumanTakeoverRuntime()
+        self.conversation = TurnStateOrchestrator(
             initial_state=ConversationState.IDLE,
             pending_action=PendingAction.NONE,
             session_id=session_id,
         )
-        self._booking_flow = (
-            ConversationalBookingFlow(
+        self._runtime_orchestrator = (
+            RuntimeConversationOrchestrator(
                 business_config,
+                session_id=session_id,
+                faq_retrieval_engine=FAQRetrievalEngine(
+                    top_k=1,
+                    retrieval_cache=self._optimizer.retrieval_cache,
+                ),
                 persistence_sink=persistence_sink,
+                human_takeover_runtime=self.human_takeover_runtime,
             )
             if business_config is not None
             else None
@@ -148,22 +176,106 @@ class SimpleClinicAgent(Agent):
             pending_action=PendingAction.GENERATE_RESPONSE,
         )
         self.session_memory.record_turn(role="caller", text=text)
+        async with self._optimizer.profiler.async_span("stt", request_id=None):
+            language = (
+                await self._language_router.route_text(
+                    text,
+                    request_id=None,
+                    is_final=True,
+                )
+            ).snapshot
+        with self._optimizer.profiler.span("memory_assembly", request_id=None):
+            self.session_memory.update_language(language.active_language)
+            self.session_memory.runtime_memory.update_language(language)
         safe_enqueue(
             self._persistence_sink,
             "enqueue_transcript",
             call_id=self.session_memory.session_id,
             speaker="caller",
             text=text,
-            language=self.session_memory.language,
+            language=language.active_language,
         )
-        if self._booking_flow is not None:
-            result = await self._booking_flow.handle_turn(
-                text,
-                memory=self.session_memory,
+        orchestration_decision = None
+        if self._runtime_orchestrator is not None:
+            async with self._optimizer.profiler.async_span("orchestration", request_id=None):
+                orchestration_decision = await self._runtime_orchestrator.handle_turn(
+                    text,
+                    memory=self.session_memory,
+                    language=language,
+                    request_id=None,
+                )
+            if orchestration_decision.booking_result is not None:
+                self.conversation.set_booking_stage_from_pending(
+                    orchestration_decision.booking_result.pending_fields,
+                    reason="booking_turn_completed",
+                )
+            if orchestration_decision.response_text is not None:
+                self.session_memory.record_turn(
+                    role="assistant",
+                    text=orchestration_decision.response_text,
+                )
+        if self._business_config is not None:
+            prompt_intent = (
+                orchestration_decision.prompt_intent
+                if orchestration_decision is not None
+                else PromptIntent(classification="livekit_user_turn")
             )
-            self.conversation.set_booking_stage_from_pending(
-                result.pending_fields,
-                reason="booking_turn_completed",
+            runtime_prompt = self._prompt_manager.compose(
+                transcript=text,
+                business=self._business_config,
+                memory=self.session_memory,
+                language=language,
+                intent=prompt_intent,
+            )
+            instructions = runtime_prompt.instructions
+            if orchestration_decision is not None and orchestration_decision.response_text:
+                instructions = (
+                    f"{instructions}\n"
+                    "Runtime workflow decision: respond with this operational result, "
+                    "without adding new workflow steps: "
+                    f"{orchestration_decision.response_text}"
+                )
+            await self.update_instructions(instructions)
+            log_event(
+                logger,
+                "agent_instructions_recomposed",
+                prompt_chars=runtime_prompt.prompt_chars,
+                prompt_size=runtime_prompt.prompt_chars,
+                compression_ratio=runtime_prompt.compression_ratio,
+                memory_pruned=runtime_prompt.memory_pruned,
+                cache_hits=runtime_prompt.cache_hits,
+                cache_misses=runtime_prompt.cache_misses,
+                memory_injection_chars=runtime_prompt.memory_chars,
+                faq_injection_count=runtime_prompt.faq_injection_count,
+                faq_injection_chars=runtime_prompt.faq_injection_chars,
+                faq_retrieval_confidence=runtime_prompt.faq_retrieval_confidence,
+                faq_retrieval_latency_ms=runtime_prompt.faq_retrieval_latency_ms,
+                retrieval_latency=runtime_prompt.faq_retrieval_latency_ms,
+                faq_retrieval_source=runtime_prompt.faq_retrieval_source,
+                selected_faq_questions=list(runtime_prompt.selected_faq_questions),
+                prompt_recomposition_index=runtime_prompt.recomposition_index,
+                intent_route=(
+                    orchestration_decision.route.value
+                    if orchestration_decision is not None
+                    else None
+                ),
+                conversation_state=(
+                    orchestration_decision.current_state.value
+                    if orchestration_decision is not None
+                    else None
+                ),
+                ownership_state=(
+                    orchestration_decision.human_takeover.ownership_state.value
+                    if orchestration_decision is not None
+                    and orchestration_decision.human_takeover is not None
+                    else None
+                ),
+            )
+            self._optimizer.log_response_summary(
+                request_id=None,
+                prompt_size=runtime_prompt.prompt_chars,
+                compression_ratio=runtime_prompt.compression_ratio,
+                memory_pruned=runtime_prompt.memory_pruned,
             )
 
 

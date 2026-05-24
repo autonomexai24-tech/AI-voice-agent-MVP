@@ -5,6 +5,11 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 
+class FAQItem(BaseModel):
+    question: str
+    answer: str
+
+
 class BusinessSettingsRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -13,6 +18,8 @@ class BusinessSettingsRead(BaseModel):
     business_type: str
     services: list[str]
     receptionist_tone: str | None = None
+    receptionist_personality: str | None = None
+    faqs: list[FAQItem] = []
     default_language: str
     greeting_prompt: str | None = None
     refusal_policy: str | None = None
@@ -24,6 +31,8 @@ class BusinessSettingsPatch(BaseModel):
     business_type: str | None = None
     services: list[str] | None = None
     receptionist_tone: str | None = None
+    receptionist_personality: str | None = None
+    faqs: list[FAQItem] | None = None
     default_language: str | None = None
     greeting_prompt: str | None = None
     refusal_policy: str | None = None

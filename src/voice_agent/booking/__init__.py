@@ -22,7 +22,22 @@ from voice_agent.booking.legacy import (
     BookingWorkflowOrchestrator,
     TimePreference,
 )
-from voice_agent.booking.workflow import BookingIntelligenceWorkflow, BookingWorkflowResult
+
+
+def __getattr__(name: str):
+    if name in {"BookingIntelligenceWorkflow", "BookingWorkflowResult"}:
+        from voice_agent.booking.workflow import (
+            BookingIntelligenceWorkflow,
+            BookingWorkflowResult,
+        )
+
+        return {
+            "BookingIntelligenceWorkflow": BookingIntelligenceWorkflow,
+            "BookingWorkflowResult": BookingWorkflowResult,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "ALL_BOOKING_FIELDS",
     "BOOKING_FAILURE_RESPONSE",

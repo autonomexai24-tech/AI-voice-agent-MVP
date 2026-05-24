@@ -17,6 +17,8 @@ class BusinessSettingsModel(Base):
     business_type: Mapped[str] = mapped_column(String(80), nullable=False)
     services: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     receptionist_tone: Mapped[str | None] = mapped_column(Text)
+    receptionist_personality: Mapped[str | None] = mapped_column(Text)
+    faqs: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
     default_language: Mapped[str] = mapped_column(String(32), default="english", nullable=False)
     greeting_prompt: Mapped[str | None] = mapped_column(Text)
     refusal_policy: Mapped[str | None] = mapped_column(Text)

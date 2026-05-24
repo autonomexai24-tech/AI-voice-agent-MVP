@@ -1,0 +1,147 @@
+{
+  "counters": {
+    "escalation_events": 5,
+    "events": 110,
+    "interruption_recovery_events": 5,
+    "latency_components": 7,
+    "livekit_events": 0,
+    "observability_observed": 9,
+    "sip_events": 0
+  },
+  "failures": [],
+  "generated_at_epoch": 1779375647.7871919,
+  "latency": [
+    {
+      "component": "event_loop_lag",
+      "count": 16,
+      "max_ms": 55.692,
+      "p95_ms": 55.692,
+      "passed": true,
+      "target_ms": 100.0
+    },
+    {
+      "component": "interruption_recovery",
+      "count": 5,
+      "max_ms": 0.197,
+      "p95_ms": 0.178,
+      "passed": true,
+      "target_ms": 400.0
+    },
+    {
+      "component": "orchestration",
+      "count": 20,
+      "max_ms": 12.161,
+      "p95_ms": 8.873,
+      "passed": true,
+      "target_ms": 80.0
+    },
+    {
+      "component": "prompt_composition",
+      "count": 20,
+      "max_ms": 6.853,
+      "p95_ms": 6.637,
+      "passed": true,
+      "target_ms": 60.0
+    },
+    {
+      "component": "queue_wait_time",
+      "count": 4,
+      "max_ms": 0.052,
+      "p95_ms": 0.05,
+      "passed": true,
+      "target_ms": 45000.0
+    },
+    {
+      "component": "stt",
+      "count": 20,
+      "max_ms": 0.289,
+      "p95_ms": 0.261,
+      "passed": true,
+      "target_ms": 600.0
+    },
+    {
+      "component": "total_response",
+      "count": 20,
+      "max_ms": 906.853,
+      "p95_ms": 906.637,
+      "passed": true,
+      "target_ms": 2500.0
+    }
+  ],
+  "metadata": {
+    "required_observability_signals": [
+      "response_latency",
+      "orchestration_latency",
+      "cache_hits",
+      "cache_misses",
+      "compression_ratio",
+      "memory_growth",
+      "escalation_events",
+      "queue_wait_time",
+      "interruption_recovery"
+    ],
+    "targets_ms": {
+      "event_loop_lag": 100.0,
+      "gpt_response_start": 900.0,
+      "interruption_recovery": 400.0,
+      "livekit_reconnect": 1500.0,
+      "orchestration": 80.0,
+      "prompt_composition": 60.0,
+      "queue_wait_time": 45000.0,
+      "retrieval": 50.0,
+      "stt": 600.0,
+      "total_response": 2500.0,
+      "tts_start": 500.0
+    }
+  },
+  "name": "phase2g-local-runtime-probe",
+  "observability": [
+    {
+      "evidence": "turn_completed",
+      "observed": true,
+      "signal": "response_latency"
+    },
+    {
+      "evidence": "validation_latency",
+      "observed": true,
+      "signal": "orchestration_latency"
+    },
+    {
+      "evidence": "validation_latency",
+      "observed": true,
+      "signal": "cache_hits"
+    },
+    {
+      "evidence": "validation_latency",
+      "observed": true,
+      "signal": "cache_misses"
+    },
+    {
+      "evidence": "validation_latency",
+      "observed": true,
+      "signal": "compression_ratio"
+    },
+    {
+      "evidence": "turn_completed",
+      "observed": true,
+      "signal": "memory_growth"
+    },
+    {
+      "evidence": "escalation_events",
+      "observed": true,
+      "signal": "escalation_events"
+    },
+    {
+      "evidence": "escalation_events",
+      "observed": true,
+      "signal": "queue_wait_time"
+    },
+    {
+      "evidence": "validation_latency",
+      "observed": true,
+      "signal": "interruption_recovery"
+    }
+  ],
+  "passed": true,
+  "warnings": []
+}

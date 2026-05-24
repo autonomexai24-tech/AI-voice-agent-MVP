@@ -245,21 +245,6 @@ def load_config(
     business_services = _list("BUSINESS_SERVICES")
     business_faqs = _faqs(errors)
 
-    _log = _get_config_logger()
-    _business_name_raw = os.getenv("BUSINESS_NAME")
-    _business_services_raw = os.getenv("BUSINESS_SERVICES")
-    _business_faqs_json_raw = os.getenv("BUSINESS_FAQS_JSON")
-    _business_faqs_raw = os.getenv("BUSINESS_FAQS")
-    print(
-        f"[config] BUSINESS_NAME raw={_business_name_raw!r}, "
-        f"BUSINESS_SERVICES raw_len={len(_business_services_raw) if _business_services_raw else 0}, "
-        f"parsed_count={len(business_services)}, "
-        f"parsed_values={business_services!r}, "
-        f"BUSINESS_FAQS_JSON raw_len={len(_business_faqs_json_raw) if _business_faqs_json_raw else 0}, "
-        f"BUSINESS_FAQS raw_len={len(_business_faqs_raw) if _business_faqs_raw else 0}, "
-        f"faqs_parsed_count={len(business_faqs)}",
-        file=sys.stderr,
-    )
     calcom_duration_minutes = _int("CALCOM_DURATION_MINUTES", 30, errors, minimum=5)
     calcom_timeout_seconds = _float("CALCOM_TIMEOUT_SECONDS", 8.0, errors, minimum=1.0)
     calcom_retry_attempts = _int("CALCOM_RETRY_ATTEMPTS", 1, errors, minimum=0)

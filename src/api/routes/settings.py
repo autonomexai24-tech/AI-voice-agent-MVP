@@ -48,6 +48,12 @@ async def update_business_settings(
             business_type=patch.business_type,
             services=tuple(patch.services) if patch.services is not None else None,
             receptionist_tone=patch.receptionist_tone,
+            receptionist_personality=patch.receptionist_personality,
+            faqs=(
+                tuple(faq.model_dump() for faq in patch.faqs)
+                if patch.faqs is not None
+                else None
+            ),
             default_language=patch.default_language,
             greeting_prompt=patch.greeting_prompt,
             refusal_policy=patch.refusal_policy,

@@ -15,8 +15,8 @@ from voice_agent.prompts.business import (
     business_memory_from_config,
     business_prompt as render_business_prompt,
 )
-from voice_agent.prompts.composer import PromptContext, compose_prompt
 from voice_agent.prompts.identity import SYSTEM_PROMPT
+from voice_agent.retrieval import FAQRetrievalEngine
 
 logger = get_logger(__name__)
 
@@ -146,13 +146,15 @@ class BusinessPromptOrchestrator:
         self,
         config: BusinessConfig,
         *,
+        context_source: str = "env",
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._base_config = config
         self._clock = clock
         self._load_lock = asyncio.Lock()
         self._loaded_context: BusinessConfig | None = None
-        self._context_source = "env"
+        self._context_source = context_source
+        self._faq_retrieval_engine = FAQRetrievalEngine(top_k=1, max_injection_chars=300)
 
     async def load(self) -> BusinessConfig:
         if self._loaded_context is not None:
@@ -164,7 +166,9 @@ class BusinessPromptOrchestrator:
 
             started_at = self._clock()
             try:
-                if self._base_config.context_path:
+                if self._context_source == "database":
+                    context = self._base_config
+                elif self._base_config.context_path:
                     context = await asyncio.to_thread(
                         _load_context_file,
                         self._base_config.context_path,
@@ -173,7 +177,6 @@ class BusinessPromptOrchestrator:
                     self._context_source = "file"
                 else:
                     context = self._base_config
-                    self._context_source = "env"
             except Exception as exc:
                 log_error(
                     logger,
@@ -222,7 +225,12 @@ class BusinessPromptOrchestrator:
         request_id: str | None = None,
     ) -> BusinessPromptDecision:
         context = await self.load()
-        intent = _classify(transcript, context)
+        intent = _classify(
+            transcript,
+            context,
+            faq_retrieval_engine=self._faq_retrieval_engine,
+            request_id=request_id,
+        )
 
         log_event(
             logger,
@@ -234,7 +242,9 @@ class BusinessPromptOrchestrator:
             faqs_count=len(context.faqs),
             classification=intent.classification,
             generation_source=(
-                "openai" if intent.classification == "business_context" else "local_guardrail"
+                "openai"
+                if intent.classification in {"business_context", "faq"}
+                else "local_guardrail"
             ),
             response_language=language.active_language,
             language_generation=language.generation,
@@ -314,10 +324,10 @@ class BusinessPromptOrchestrator:
         if intent.classification == "faq" and intent.matched_faq is not None:
             return BusinessPromptDecision(
                 classification="faq",
-                generation_source="local_guardrail",
-                instructions=None,
-                input_text=None,
-                response_text=_phone_friendly_text(intent.matched_faq.answer),
+                generation_source="openai",
+                instructions=_build_instructions(context, language),
+                input_text=_build_input(transcript, language),
+                response_text=None,
                 matched_faq=intent.matched_faq.question,
             )
 
@@ -401,7 +411,13 @@ def _faqs_value(value: Any, default: tuple[BusinessFAQ, ...]) -> tuple[BusinessF
     return tuple(faqs)
 
 
-def _classify(transcript: str, context: BusinessConfig) -> _Intent:
+def _classify(
+    transcript: str,
+    context: BusinessConfig,
+    *,
+    faq_retrieval_engine: FAQRetrievalEngine | None = None,
+    request_id: str | None = None,
+) -> _Intent:
     normalized = _normalize(transcript)
     tokens = _expanded_tokens(_tokens(normalized))
     requested_service = _extract_requested_service(transcript)
@@ -409,7 +425,15 @@ def _classify(transcript: str, context: BusinessConfig) -> _Intent:
     if _is_service_list_question(normalized, tokens):
         return _Intent("service_list")
 
-    matched_faq = _match_faq(normalized, tokens, context.faqs)
+    matched_faq = _match_faq(
+        normalized,
+        tokens,
+        context.faqs,
+        faq_retrieval_engine=faq_retrieval_engine,
+        transcript=transcript,
+        business=context,
+        request_id=request_id,
+    )
     if matched_faq is not None:
         return _Intent("faq", matched_faq=matched_faq)
 
@@ -436,15 +460,22 @@ def _classify(transcript: str, context: BusinessConfig) -> _Intent:
 
 
 def _build_instructions(context: BusinessConfig, language: SessionLanguageSnapshot) -> str:
-    composed = compose_prompt(PromptContext(business=context, language=language))
-    instructions = composed.instructions
+    instructions = (
+        f"{SYSTEM_PROMPT}\n"
+        f"Business name: {context.name}\n"
+        f"Business type: {context.business_type}\n"
+        f"Services: {_format_services(context.services)}\n"
+        f"Language: respond in {language.openai_response_language}.\n"
+        "Refuse unrelated topics politely. Ask only one booking question at a time."
+    )
     log_event(
         logger,
         "business_instructions_built",
         instruction_chars=len(instructions),
         business_name=context.name,
         services_count=len(context.services),
-        faqs_count=len(context.faqs),
+        faqs_count=0,
+        faq_injection_mode="dynamic_realtime_only",
     )
     return instructions
 
@@ -627,7 +658,21 @@ def _match_faq(
     normalized: str,
     query_tokens: set[str],
     faqs: tuple[BusinessFAQ, ...],
+    *,
+    faq_retrieval_engine: FAQRetrievalEngine | None = None,
+    transcript: str | None = None,
+    business: BusinessConfig | None = None,
+    request_id: str | None = None,
 ) -> BusinessFAQ | None:
+    if faq_retrieval_engine is not None and transcript is not None and business is not None:
+        result = faq_retrieval_engine.retrieve(
+            transcript=transcript,
+            business=business,
+            request_id=request_id,
+        )
+        if result.matches:
+            return result.matches[0].faq
+
     best_match: BusinessFAQ | None = None
     best_score = 0.0
     for faq in faqs:

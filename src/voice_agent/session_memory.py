@@ -7,6 +7,7 @@ from voice_agent.booking.entities import BookingField, BookingFieldValue, Bookin
 from voice_agent.conversation.orchestrator import booking_stage_from_pending_fields
 from voice_agent.conversation.states import BookingStage
 from voice_agent.logging_config import get_logger, log_event
+from voice_agent.memory.call_memory_engine import CallMemoryEngine
 
 logger = get_logger(__name__)
 
@@ -96,8 +97,19 @@ class CallSessionMemory:
     language: str = "english"
     booking: BookingMemory = field(default_factory=BookingMemory)
     booking_stage: BookingStage = BookingStage.IDLE
+    escalation_triggered: bool = False
+    escalation_reason: str | None = None
     recent_turns: list[dict[str, str]] = field(default_factory=list)
-    max_turns: int = 8
+    max_turns: int = 16
+    last_faq_retrieval: dict[str, Any] | None = None
+    rolling_context_summary: str = ""
+    compressed_context_turns: int = 0
+    pruned_turn_count: int = 0
+    runtime_memory: CallMemoryEngine = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.runtime_memory = CallMemoryEngine(self.session_id)
+        self.runtime_memory.update_from_session(self)
 
     @property
     def caller_name(self) -> str | None:
@@ -140,10 +152,32 @@ class CallSessionMemory:
             return
         previous_language = self.language
         self.language = language
+        self.runtime_memory.update_language(language, request_id=request_id)
         self._log_update(
             request_id=request_id,
             updated_fields=("language",),
             previous_language=previous_language,
+        )
+
+    def mark_escalation(
+        self,
+        *,
+        reason: str,
+        request_id: str | None = None,
+    ) -> None:
+        cleaned_reason = " ".join(reason.strip().split()) or "unspecified"
+        if self.escalation_triggered and self.escalation_reason == cleaned_reason:
+            return
+        self.escalation_triggered = True
+        self.escalation_reason = cleaned_reason
+        self.runtime_memory.note_escalation(
+            reason=cleaned_reason,
+            request_id=request_id,
+        )
+        self._log_update(
+            request_id=request_id,
+            updated_fields=("escalation",),
+            escalation_reason=cleaned_reason,
         )
 
     def capture_booking_fields(
@@ -180,6 +214,7 @@ class CallSessionMemory:
                 request_id=request_id,
                 reason="booking_field_captured",
             )
+            self.runtime_memory.update_from_session(self, request_id=request_id)
             self._log_update(
                 request_id=request_id,
                 updated_fields=tuple(captured),
@@ -224,10 +259,15 @@ class CallSessionMemory:
             self.booking.active_correction = ",".join(corrected) if corrected else None
             self.booking.confirmation_completed = False
             self.booking.awaiting_confirmation = False
+            self.runtime_memory.note_corrections(
+                tuple(corrected),
+                request_id=request_id,
+            )
             self.update_booking_stage(
                 request_id=request_id,
                 reason="booking_values_applied",
             )
+            self.runtime_memory.update_from_session(self, request_id=request_id)
             self._log_update(
                 request_id=request_id,
                 updated_fields=tuple(captured + corrected),
@@ -277,19 +317,26 @@ class CallSessionMemory:
 
     def mark_notes_requested(self) -> None:
         self.booking.notes_requested = True
+        self.runtime_memory.mark_unresolved_question(field_name="notes")
 
     def mark_awaiting_confirmation(self, fingerprint: str) -> None:
         self.booking.awaiting_confirmation = True
         self.booking.last_summary_fingerprint = fingerprint
+        self.runtime_memory.mark_unresolved_question(field_name="confirmation")
+        self.runtime_memory.update_from_session(self)
 
     def mark_confirmation_completed(self) -> None:
         self.booking.awaiting_confirmation = False
         self.booking.confirmation_completed = True
         self.booking.active_correction = None
+        self.runtime_memory.resolve_question(field_name="confirmation")
+        self.runtime_memory.update_from_session(self)
 
     def clear_confirmation(self) -> None:
         self.booking.awaiting_confirmation = False
         self.booking.confirmation_completed = False
+        self.runtime_memory.resolve_question(field_name="confirmation")
+        self.runtime_memory.update_from_session(self)
 
     def update_booking_stage(
         self,
@@ -327,10 +374,47 @@ class CallSessionMemory:
             return
         self.recent_turns.append({"role": role, "text": cleaned[:240]})
         del self.recent_turns[:-self.max_turns]
+        self.runtime_memory.record_turn(
+            role=role,
+            text=cleaned,
+            request_id=request_id,
+        )
         self._log_update(
             request_id=request_id,
             updated_fields=("recent_turns",),
             recent_turn_count=len(self.recent_turns),
+        )
+
+    def record_faq_retrieval(
+        self,
+        *,
+        matched_count: int,
+        confidence: float,
+        injected_chars: int,
+        latency_ms: float,
+        source: str,
+        selected_questions: tuple[str, ...],
+        request_id: str | None = None,
+        failure_reason: str | None = None,
+    ) -> None:
+        self.last_faq_retrieval = {
+            "matched_count": matched_count,
+            "confidence": confidence,
+            "injected_chars": injected_chars,
+            "latency_ms": latency_ms,
+            "source": source,
+            "selected_questions": selected_questions,
+            "failure_reason": failure_reason,
+        }
+        self._log_update(
+            request_id=request_id,
+            updated_fields=("faq_retrieval",),
+            faq_retrieval_matched_count=matched_count,
+            faq_retrieval_confidence=confidence,
+            faq_retrieval_injected_chars=injected_chars,
+            faq_retrieval_latency_ms=latency_ms,
+            faq_retrieval_source=source,
+            faq_retrieval_failure_reason=failure_reason,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -349,6 +433,26 @@ class CallSessionMemory:
             "confirmation_completed": self.booking.confirmation_completed,
             "booking_stage": self.booking_stage.value,
             "pending_booking_fields": self.pending_booking_fields,
+            "escalation_triggered": self.escalation_triggered,
+            "escalation_reason": self.escalation_reason,
+            "runtime_memory": {
+                "turn_index": self.runtime_memory.turn_index,
+                "compressed_turns": self.runtime_memory.snapshot().compressed_turns,
+                "unresolved_questions": [
+                    {
+                        "field_name": question.field_name,
+                        "attempts": question.attempts,
+                    }
+                    for question in self.runtime_memory.unresolved_questions()
+                ],
+            },
+            "optimization": {
+                "rolling_context_summary": self.rolling_context_summary,
+                "compressed_context_turns": self.compressed_context_turns,
+                "pruned_turn_count": self.pruned_turn_count,
+                "recent_turn_count": len(self.recent_turns),
+            },
+            "last_faq_retrieval": self.last_faq_retrieval,
         }
 
     def _log_update(
@@ -374,5 +478,9 @@ class CallSessionMemory:
             optional_notes_known=self.booking.optional_notes is not None,
             booking_stage=self.booking_stage.value,
             pending_booking_fields=list(self.pending_booking_fields),
+            escalation_triggered=self.escalation_triggered,
+            memory_growth=self.runtime_memory.turn_index,
+            runtime_memory_turns=self.runtime_memory.turn_index,
+            compressed_turns=self.runtime_memory.snapshot().compressed_turns,
             **extra,
         )
